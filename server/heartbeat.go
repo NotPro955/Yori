@@ -1,8 +1,10 @@
-package server
+package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
+	"strings"
 )
 
 func heartbeat(ser *Server) {
@@ -19,23 +21,36 @@ func (ser *Server) heartbeat_listener(ln net.Listener) {
 
 		if err != nil {
 			fmt.Println("accept error: ", err)
+			continue
 		}
-		fmt.Println("[+] New Heartbeat connected: ", client.RemoteAddr())
-		client_status := ser.clients[client.RemoteAddr()]
-		client_status = true
+		reader := bufio.NewScanner(client)
+		if !reader.Scan() {
+			client.Close()
+			continue
+		}
+		username := strings.TrimSpace(reader.Text())
+		ser.state_mu.Lock()
+		ser.heartbeats[client.RemoteAddr()] = username
+		ser.state_mu.Unlock()
 
-		go heartbeat_connection(client, client_status)
+		go heartbeat_connection(ser, client, reader)
 	}
 
 }
 
-func heartbeat_connection(client net.Conn, client_status bool) {
+func heartbeat_connection(ser *Server, client net.Conn, reader *bufio.Scanner) {
+	defer client.Close()
+	defer func() {
+		ser.state_mu.Lock()
+		delete(ser.heartbeats, client.RemoteAddr())
+		ser.state_mu.Unlock()
+	}()
 	for {
-		beat := readloop(client)
-		if beat != "heartbeat" {
-			fmt.Println("[-] No heartbeat: ", client.RemoteAddr())
-			client_status = false
+		if !reader.Scan() || strings.TrimSpace(reader.Text()) != "heartbeat" {
 			break
 		}
+	}
+	if reader.Err() != nil {
+		return
 	}
 }
