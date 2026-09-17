@@ -11,7 +11,7 @@ type Server struct {
 	clients     map[net.Addr]bool
 }
 
-func NewServer(server_addr string) *Server {
+func NewServer(server_addr string) {
 	ln, err := net.Listen("tcp", server_addr)
 	if err != nil {
 		panic(err)
@@ -22,9 +22,8 @@ func NewServer(server_addr string) *Server {
 		listener:    ln,
 		clients:     make(map[net.Addr]bool),
 	}
-	go heartbeat()
+	go heartbeat(ser)
 	ser.accept()
-	return ser
 }
 
 func (ser *Server) accept() {
@@ -39,7 +38,7 @@ func (ser *Server) accept() {
 
 }
 
-func (ser *Server) readloop(client net.Conn) string {
+func readloop(client net.Conn) string {
 
 	buf := make([]byte, 1024)
 	n, err := client.Read(buf)

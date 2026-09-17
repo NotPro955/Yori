@@ -5,47 +5,37 @@ import (
 	"net"
 )
 
-func heartbeat() {
+func heartbeat(ser *Server) {
 	ln, err := net.Listen("tcp", ":9500")
 	if err != nil {
 		panic(err)
 	}
-
-	ser := &Server{
-		server_addr: ":9500",
-		listener:    ln,
-		clients:     make(map[net.Addr]bool),
-	}
-
-	ser.heartbeat_clients()
+	ser.heartbeat_listener(ln)
 }
 
-func (ser *Server) heartbeat_clients() {
+func (ser *Server) heartbeat_listener(ln net.Listener) {
 	for {
-		client, err := ser.listener.Accept()
+		client, err := ln.Accept()
+
 		if err != nil {
 			fmt.Println("accept error: ", err)
 		}
-		fmt.Println("[+] New clinet connected: ", client.RemoteAddr())
-		ser.clients[client.RemoteAddr()] = true
+		fmt.Println("[+] New Heartbeat connected: ", client.RemoteAddr())
+		client_status := ser.clients[client.RemoteAddr()]
+		client_status = true
 
-		go ser.heartbeat_connection()
-
-		for {
-			status := ser.readloop(client)
-			if status != "heartbeat" {
-				fmt.Println("[-] Client Disconnected", client.RemoteAddr().String())
-				ser.clients[client.RemoteAddr()] = false
-				break
-			}
-		}
+		go heartbeat_connection(client, client_status)
 	}
+
 }
 
-func (ser *Server) heartbeat_connection() {
-	for client, status := range ser.clients {
-		if status {
-			fmt.Println("[+] Client Connected: ", client)
+func heartbeat_connection(client net.Conn, client_status bool) {
+	for {
+		beat := readloop(client)
+		if beat != "heartbeat" {
+			fmt.Println("[-] No heartbeat: ", client.RemoteAddr())
+			client_status = false
+			break
 		}
 	}
 }
