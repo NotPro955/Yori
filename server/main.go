@@ -22,8 +22,8 @@ func NewServer(server_addr string) *Server {
 		listener:    ln,
 		clients:     make(map[net.Addr]bool),
 	}
+	go heartbeat()
 	ser.accept()
-	go heartbeat(ser)
 	return ser
 }
 
@@ -36,6 +36,17 @@ func (ser *Server) accept() {
 		fmt.Println("[+] New clinet connected: ", client.RemoteAddr())
 		ser.clients[client.RemoteAddr()] = true
 	}
+
+}
+
+func (ser *Server) readloop(client net.Conn) string {
+
+	buf := make([]byte, 1024)
+	n, err := client.Read(buf)
+	if err != nil {
+		fmt.Println("read error ", client.RemoteAddr().String(), ": ", err)
+	}
+	return string(buf[:n])
 }
 
 func main() {
