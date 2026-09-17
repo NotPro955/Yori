@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"fmt"
@@ -34,16 +34,33 @@ func (ser *Server) accept() {
 		}
 		fmt.Println("[+] New clinet connected: ", client.RemoteAddr())
 		ser.clients[client.RemoteAddr()] = true
-	}
 
+		go client_msg(client)
+	}
+}
+
+func client_msg(client net.Conn) {
+Loop:
+	for {
+		msg := readloop(client)
+		switch msg {
+		case "quit\n":
+			client.Close()
+			break Loop
+		default:
+			fmt.Println("[", client.RemoteAddr(), "]", ": ", msg)
+		}
+
+	}
 }
 
 func readloop(client net.Conn) string {
 
-	buf := make([]byte, 1024)
+	buf := make([]byte, 2048)
 	n, err := client.Read(buf)
 	if err != nil {
 		fmt.Println("read error ", client.RemoteAddr().String(), ": ", err)
+		return "quit"
 	}
 	return string(buf[:n])
 }
