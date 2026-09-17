@@ -46,7 +46,11 @@ func (ser *Server) print_users() {
 	}
 	fmt.Println("users:")
 	for address, username := range ser.clients {
-		fmt.Printf(" - %s (%s)\n", username, address)
+		peerAddress := ser.peerAddrs[username]
+		if peerAddress == "" {
+			peerAddress = address.String()
+		}
+		fmt.Printf(" - %s (%s)\n", username, peerAddress)
 	}
 }
 

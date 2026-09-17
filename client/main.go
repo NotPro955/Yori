@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
+	mrand "math/rand"
 	"net"
 	"os"
 	"strings"
@@ -17,6 +19,13 @@ func main() {
 	}
 	defer server.Close()
 
+	state := &clientState{
+		keys:        make(map[string][]byte),
+		outgoing:    make(map[string][]byte),
+		peers:       make(map[string]Peer),
+		peerUpdates: make(chan struct{}, 1),
+	}
+
 	terminal := bufio.NewReader(os.Stdin)
 	fmt.Print("Username: ")
 	username, err := terminal.ReadString('\n')
@@ -27,60 +36,122 @@ func main() {
 	if username == "" {
 		log.Fatal("username cannot be empty")
 	}
+	state.mu.Lock()
+	state.username = username
+	state.mu.Unlock()
+	peerAddress, err := startPeerListener(state, server)
+	if err != nil {
+		log.Fatal("peer listener:", err)
+	}
+	go read_server(server, state)
 	go startHeartbeat("localhost:9500", username)
 
-	if _, err := fmt.Fprintln(server, username); err != nil {
+	if _, err := fmt.Fprintf(server, "%s\t%s\n", username, peerAddress); err != nil {
 		log.Fatal(err)
 	}
-	server_reader := bufio.NewReader(server)
+	if err := send_packet(server, Packet{Type: "users"}); err != nil {
+		log.Fatal("peer discovery:", err)
+	}
 
 	fmt.Println("Connected as", username)
-	fmt.Println("Commands: /users, /quit")
+	fmt.Println("Commands: /users, /key, /session <user> <public-key>, /chat <user>, /quit")
 	for {
 		fmt.Print("> ")
 		message, err := terminal.ReadString('\n')
 		if err != nil {
 			return
 		}
-		if strings.TrimSpace(message) == "/quit" {
+		cmd := strings.TrimSpace(message)
+		switch {
+		case cmd == "/quit":
 			fmt.Fprintln(server, "quit")
 			return
-		}
-		if strings.TrimSpace(message) == "/users" {
+		case cmd == "/users":
 			if err := send_packet(server, Packet{Type: "users"}); err != nil {
 				log.Println("send error:", err)
 				return
 			}
-			response, err := server_reader.ReadString('\n')
-			if err != nil {
-				log.Println("receive error:", err)
+		case cmd == "/key":
+			showPublicKey(state)
+		case strings.HasPrefix(cmd, "/session "):
+			if !startSession(cmd, server, state, username) {
 				return
 			}
-			var packet Packet
-			if err := json.Unmarshal([]byte(response), &packet); err != nil {
-				log.Println("invalid server response:", err)
-				continue
+		case strings.HasPrefix(cmd, "/chat "):
+			if !startChat(cmd, terminal, server, state, username) {
+				return
 			}
-			fmt.Println("Online users:", strings.Join(packet.Users, ", "))
-			continue
-		}
-		if _, err := fmt.Fprint(server, message); err != nil {
-			log.Println("send error:", err)
-			return
+		default:
+			fmt.Println("Unknown command")
 		}
 	}
 }
 
-type Packet struct {
-	Type  string   `json:"type"`
-	Users []string `json:"users,omitempty"`
-}
-
-func send_packet(server net.Conn, packet Packet) error {
-	data, err := json.Marshal(packet)
+func showPublicKey(state *clientState) {
+	privateKey, err := ensurePrivateKey(state)
 	if err != nil {
-		return err
+		log.Println("keygen error:", err)
+		return
 	}
-	_, err = server.Write(append(data, '\n'))
-	return err
+	fmt.Println("Public key:", base64.RawStdEncoding.EncodeToString(privateKey.PublicKey().Bytes()))
+}
+
+func startSession(cmd string, server net.Conn, state *clientState, username string) bool {
+	parts := strings.Fields(cmd)
+	if len(parts) != 3 {
+		fmt.Println("usage: /session <user> <public-key>")
+		return true
+	}
+	privateKey, err := ensurePrivateKey(state)
+	if err != nil {
+		fmt.Println("keygen error:", err)
+		return true
+	}
+	shared, err := deriveSessionKey(privateKey, parts[2])
+	if err != nil {
+		fmt.Println("invalid key:", err)
+		return true
+	}
+	aliceKey, err := randomAESKey()
+	if err != nil {
+		fmt.Println("session key error:", err)
+		return true
+	}
+	offer, err := json.Marshal(sessionEnvelope{Sender: username, Key: aliceKey})
+	if err != nil {
+		fmt.Println("session offer encoding error:", err)
+		return true
+	}
+	encryptedKey, err := encryptBytes(shared, offer)
+	if err != nil {
+		fmt.Println("session key encryption error:", err)
+		return true
+	}
+	state.mu.Lock()
+	state.keys[parts[1]] = aliceKey
+	state.outgoing[parts[1]] = aliceKey
+	state.mu.Unlock()
+	publicKey := base64.RawStdEncoding.EncodeToString(privateKey.PublicKey().Bytes())
+	if err := directSendToUser(state, parts[1], Packet{Type: "session_offer", To: parts[1], Payload: encryptedKey, PublicKey: publicKey, Hops: mrand.Intn(3) + 3}); err != nil {
+		log.Println("session direct send error:", err)
+		return false
+	}
+	fmt.Println("session offer sent to", parts[1])
+	return true
+}
+
+func startChat(cmd string, terminal *bufio.Reader, server net.Conn, state *clientState, username string) bool {
+	parts := strings.Fields(cmd)
+	if len(parts) != 2 {
+		fmt.Println("usage: /chat <user>")
+		return true
+	}
+	state.mu.RLock()
+	key, ok := state.outgoing[parts[1]]
+	state.mu.RUnlock()
+	if !ok {
+		fmt.Println("no session key for", parts[1], "- use /session <user> <public-key>")
+		return true
+	}
+	return chat_session(terminal, server, state, username, parts[1], key)
 }
