@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"net"
 	"strings"
 	"time"
@@ -22,8 +21,7 @@ func (ser *Server) heartbeat_listener(ln net.Listener) {
 		client, err := ln.Accept()
 
 		if err != nil {
-			fmt.Println("accept error: ", err)
-			continue
+			return
 		}
 		reader := bufio.NewScanner(client)
 		reader.Buffer(make([]byte, 256), maxPacketBytes)
@@ -42,17 +40,21 @@ func (ser *Server) heartbeat_listener(ln net.Listener) {
 		ser.heartbeats[client.RemoteAddr()] = username
 		ser.state_mu.Unlock()
 
-		go heartbeat_connection(ser, client, reader)
+		go heartbeat_connection(ser, client, reader, username)
 	}
 
 }
 
-func heartbeat_connection(ser *Server, client net.Conn, reader *bufio.Scanner) {
+func heartbeat_connection(ser *Server, client net.Conn, reader *bufio.Scanner, username string) {
 	defer client.Close()
 	defer func() {
 		ser.state_mu.Lock()
 		delete(ser.heartbeats, client.RemoteAddr())
+		conn, exists := ser.connections[username]
 		ser.state_mu.Unlock()
+		if exists && conn != nil {
+			_ = conn.Close()
+		}
 	}()
 	for {
 		_ = client.SetReadDeadline(time.Now().Add(15 * time.Second))

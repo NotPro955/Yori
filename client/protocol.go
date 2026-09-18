@@ -80,6 +80,7 @@ type clientState struct {
 	relayKey    *ecdh.PrivateKey
 	identityKey ed25519.PrivateKey
 	serverAddr  string
+	serverConn  net.Conn
 	keys        map[string][]byte
 	outgoing    map[string][]byte
 	shared      map[string][]byte

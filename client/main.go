@@ -13,9 +13,24 @@ import (
 )
 
 func main() {
-	server, err := net.Dial("tcp", "localhost:9000")
+	terminal := bufio.NewReader(os.Stdin)
+
+	fmt.Print("Server IP: ")
+	serverIP, err := terminal.ReadString('\n')
 	if err != nil {
 		log.Fatal(err)
+	}
+	serverIP = strings.TrimSpace(serverIP)
+	if serverIP == "" {
+		serverIP = "localhost"
+	}
+
+	serverAddr := net.JoinHostPort(serverIP, "9000")
+	heartbeatAddr := net.JoinHostPort(serverIP, "9500")
+
+	server, err := net.Dial("tcp", serverAddr)
+	if err != nil {
+		log.Fatalf("cannot connect to server at %s: %v", serverAddr, err)
 	}
 	defer server.Close()
 
@@ -32,7 +47,6 @@ func main() {
 		peerUpdates: make(chan struct{}, 1),
 	}
 
-	terminal := bufio.NewReader(os.Stdin)
 	fmt.Print("Username: ")
 	username, err := terminal.ReadString('\n')
 	if err != nil {
@@ -45,6 +59,7 @@ func main() {
 	state.mu.Lock()
 	state.username = username
 	state.serverAddr = server.RemoteAddr().String()
+	state.serverConn = server
 	state.mu.Unlock()
 	peerAddress, err := startPeerListener(state, server)
 	if err != nil {
@@ -60,7 +75,7 @@ func main() {
 	}
 	identityPublicKey := base64.RawStdEncoding.EncodeToString(identityKey.Public().(ed25519.PublicKey))
 	go read_server(server, state)
-	go startHeartbeat("localhost:9500", username)
+	go startHeartbeat(heartbeatAddr, username)
 
 	if _, err := fmt.Fprintf(server, "%s\t%s\t%s\t%s\n", username, peerAddress, relayKey, identityPublicKey); err != nil {
 		log.Fatal(err)
@@ -80,6 +95,7 @@ func main() {
 		cmd := strings.TrimSpace(message)
 		switch {
 		case cmd == "/quit":
+			clearAllSessions(state)
 			fmt.Fprintln(server, "quit")
 			return
 		case cmd == "/users":
@@ -174,7 +190,7 @@ func startSession(cmd string, server net.Conn, state *clientState, username stri
 	publicKey := base64.RawStdEncoding.EncodeToString(privateKey.PublicKey().Bytes())
 	if err := directSendToUser(state, parts[1], Packet{Type: "session_offer", To: parts[1], Payload: encryptedKey, PublicKey: publicKey}); err != nil {
 		log.Println("session direct send error:", err)
-		return false
+		return true
 	}
 	fmt.Println("session offer sent to", parts[1])
 	return true

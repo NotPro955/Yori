@@ -79,7 +79,7 @@ func (ser *Server) accept() {
 	for {
 		client, err := ser.listener.Accept()
 		if err != nil {
-			continue
+			return
 		}
 		ser.state_mu.Lock()
 		ser.clients[client.RemoteAddr()] = "unknown"
@@ -100,6 +100,7 @@ func client_msg(ser *Server, client net.Conn) {
 	parts := strings.SplitN(strings.TrimSpace(registration), "\t", 4)
 	username := parts[0]
 	if !validUsername(username) {
+		_ = write_packet(client, Packet{Type: "error", Payload: "invalid username"})
 		client.Close()
 		return
 	}
@@ -120,6 +121,7 @@ func client_msg(ser *Server, client net.Conn) {
 	ser.state_mu.Lock()
 	if _, exists := ser.connections[username]; exists {
 		ser.state_mu.Unlock()
+		_ = write_packet(client, Packet{Type: "error", Payload: "username already taken"})
 		client.Close()
 		return
 	}
@@ -128,6 +130,7 @@ func client_msg(ser *Server, client net.Conn) {
 	ser.peerAddrs[username] = peerAddr
 	ser.peerKeys[username] = peerKey
 	ser.state_mu.Unlock()
+	println("[server] user registered:", username)
 	ser.broadcast_users()
 	defer func() {
 		ser.state_mu.Lock()
@@ -137,6 +140,7 @@ func client_msg(ser *Server, client net.Conn) {
 		delete(ser.peerKeys, username)
 		delete(ser.identities, username)
 		ser.state_mu.Unlock()
+		println("[server] client disconnected:", username)
 		ser.broadcast_users()
 	}()
 

@@ -24,7 +24,9 @@ func read_server(server net.Conn, state *clientState) {
 		switch packet.Type {
 		case "users":
 			state.mu.Lock()
+			active := make(map[string]bool, len(packet.Users))
 			for _, peer := range packet.Users {
+				active[peer.Username] = true
 				if old, exists := state.identities[peer.Username]; exists && old != peer.Identity {
 					state.keyChanged[peer.Username] = true
 				}
@@ -32,6 +34,11 @@ func read_server(server net.Conn, state *clientState) {
 					state.identities[peer.Username] = peer.Identity
 				}
 				state.peers[peer.Username] = peer
+			}
+			for name := range state.peers {
+				if !active[name] {
+					delete(state.peers, name)
+				}
 			}
 			select {
 			case state.peerUpdates <- struct{}{}:
@@ -74,10 +81,10 @@ func read_server(server net.Conn, state *clientState) {
 				continue
 			}
 			state.mu.RLock()
-			peer, known := state.peers[offer.Sender]
+			peerIdentity, known := state.identities[offer.Sender]
 			changed := state.keyChanged[offer.Sender]
 			state.mu.RUnlock()
-			if changed || !known || !verifySessionSignature(peer.Identity, offer.Sender, offer.SessionID, offer.PublicKey, offer.Signature) {
+			if changed || !known || !verifySessionSignature(peerIdentity, offer.Sender, offer.SessionID, offer.PublicKey, offer.Signature) {
 				fmt.Println("session identity verification failed")
 				continue
 			}
@@ -123,9 +130,9 @@ func read_server(server net.Conn, state *clientState) {
 				continue
 			}
 			state.mu.RLock()
-			peer, known := state.peers[sender]
+			identity, known := state.identities[sender]
 			state.mu.RUnlock()
-			if !known || !verifySessionSignature(peer.Identity, sender, sessionID, publicKey, signature) {
+			if !known || !verifySessionSignature(identity, sender, sessionID, publicKey, signature) {
 				fmt.Println("session identity verification failed")
 				continue
 			}
@@ -232,3 +239,60 @@ func decryptSessionReply(state *clientState, ciphertext string) (string, string,
 	}
 	return "", "", "", "", lastErr
 }
+
+func clearSession(state *clientState, recipient string) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if k, ok := state.keys[recipient]; ok {
+		for i := range k {
+			k[i] = 0
+		}
+		delete(state.keys, recipient)
+	}
+	if k, ok := state.outgoing[recipient]; ok {
+		for i := range k {
+			k[i] = 0
+		}
+		delete(state.outgoing, recipient)
+	}
+	if k, ok := state.shared[recipient]; ok {
+		for i := range k {
+			k[i] = 0
+		}
+		delete(state.shared, recipient)
+	}
+	if sid, ok := state.sessionIDs[recipient]; ok {
+		delete(state.received, sid)
+		delete(state.sessionIDs, recipient)
+	}
+	delete(state.sendCounts, recipient)
+	state.privateKey = nil
+}
+
+func clearAllSessions(state *clientState) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	for u, k := range state.keys {
+		for i := range k {
+			k[i] = 0
+		}
+		delete(state.keys, u)
+	}
+	for u, k := range state.outgoing {
+		for i := range k {
+			k[i] = 0
+		}
+		delete(state.outgoing, u)
+	}
+	for u, k := range state.shared {
+		for i := range k {
+			k[i] = 0
+		}
+		delete(state.shared, u)
+	}
+	state.sessionIDs = make(map[string]string)
+	state.sendCounts = make(map[string]uint64)
+	state.received = make(map[string]map[uint64]bool)
+	state.privateKey = nil
+}
+

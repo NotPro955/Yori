@@ -3,14 +3,189 @@ Yori V1 Security/Privacy Prototype Progress
 
 Scope
 -----
-This is a security-focused academic/prototype P2P chat system. V1 does not attempt to become Tor, Signal, a production anonymity network, a DHT, a mixnet, or a global traffic-analysis defense.
+This is a security-focused academic/prototype P2P chat system. V1 does not attempt
+to become Tor, Signal, a production anonymity network, a DHT, a mixnet, or a global
+traffic-analysis defense.
 
 Repository layout
 -----------------
-- client/: terminal client, direct peer listener, crypto/session/message logic
-- server/: coordination/presence server and final delivery endpoint
+- client/: terminal client, direct peer listener, crypto/session/message/onion logic
+- server/: coordination/presence server, heartbeat server, final delivery endpoint
 - Both directories are independent Go modules.
-- The repository root has no go.mod, so Go commands must run separately in client/ and server/.
+- The repository root has no go.mod; Go commands must run separately in client/ and server/.
+- go.work describes both modules for tooling convenience.
+
+Current status
+--------------
+All phases are complete and validated. The following is a full inventory of what is
+implemented, tested, and verified across both modules.
+
+Phase 1 - Protocol and transport (COMPLETE)
+--------------------------------------------
+- Protocol version 1 enforced on every packet (client and server).
+- Every outgoing packet gets a cryptographically random 16-byte base64 packet ID.
+- Circuit IDs assigned per onion route; carried through each relay hop.
+- TTL field present on every packet; max is 8, default is 5.
+- Packet payload capped at 48 KB; full packet capped at 64 KB.
+- Recipient (To) field capped at 32 bytes.
+- bufio.Scanner buffer bounded to maxPacketBytes on all readers (client and server).
+- Read deadlines: 15 s at registration, 5 min during session (server); 15 s on peer
+  connections and heartbeat connections.
+- Write deadlines: 15 s on server writes; 5 s on direct peer TCP sends.
+- Packet type allowlist enforced on both sides; unknown types are rejected.
+- validatePacket() called on every inbound packet before processing.
+- Direct peer TCP proxy: each relay opens a new TCP connection per hop.
+- Onion envelopes with per-hop AES-GCM encrypted layers.
+- Route selection excludes sender and recipient; 2 to 5 relays chosen.
+- TTL decremented at each relay; packet dropped when TTL reaches 0 on a non-exit hop.
+- Bounded relay jitter: 50-500 ms using crypto/rand.
+
+Phase 2/3 - Cryptography and authenticated sessions (COMPLETE)
+---------------------------------------------------------------
+- X25519 ECDH key agreement for both session keys and onion layer keys.
+- HKDF-SHA256 replaces raw SHA-256; all key derivation uses HKDF.
+- Session key label: "yori/session/v1".
+- Directional keys:
+    send = HKDF(.., "yori/session/v1/<sessionID>/a-to-b")
+    recv = HKDF(.., "yori/session/v1/<sessionID>/b-to-a")
+  Initiator uses a-to-b as send key; responder flips.
+- AES-256-GCM with random 12-byte nonce prepended to ciphertext (base64 encoded).
+- Separate AAD context strings per use case:
+    session offer:  "yori/session/v1/offer"
+    session reply:  "yori/session/v1/reply"
+    onion layer:    "yori/onion/v1"
+    chat message:   "yori/message/v1|<sessionID>"
+- In-memory Ed25519 identity key generated at startup via crypto/rand.
+- Session offers and replies carry an Ed25519 signature binding sender + sessionID +
+  ephemeralPublicKey under label "yori/session/v1|<sender>|<sessionID>|<pubKey>".
+- Signature verified on receipt using the peer's identity key from the server peer record.
+- Identity fingerprint: SHA-256(identityPublicKey), first 16 base64 characters shown.
+- TOFU identity pinning: first-seen identity stored per peer; changes set keyChanged=true
+  and block new sessions (/session prints WARNING and returns early).
+- Private identity and session keys are never sent to or stored on the server.
+- Relay key (separate X25519 key) used only for onion layer decryption at relay hops.
+- Each onion layer uses a fresh ephemeral X25519 key; relay uses its relayKey to peel.
+
+Phase 4/5 - Onion routing and messaging (COMPLETE)
+---------------------------------------------------
+- buildOnion() constructs layers inside-out: innermost layer carries recipient and
+  original payload; outer layers carry only next hop and opaque ciphertext.
+- Each onionPacket = {ephemeral: <pubKey>, ciphertext: <AES-GCM blob>} encoded as JSON
+  then base64 in Packet.Payload.
+- decryptOnionLayer() uses the relay's relayKey to recover the onionEnvelope.
+- Exit relay (where envelope.Next == serverAddr) sends a "deliver" packet to the server
+  over its existing main TCP connection.
+- Server deliver() rewrites "send" -> "message" for the recipient and forwards the opaque
+  payload; the server never decrypts the chat ciphertext.
+- chatEnvelope fields: Version, MessageID (random 16-byte base64), SessionID, Counter
+  (monotonic uint64), Sender, Body.
+- Counter starts at 1 (send count incremented before use); Counter == 0 is invalid.
+- Duplicate counter check per sessionID: state.received[sessionID][counter] must be false.
+- Replayed ciphertexts (same counter in same session) are rejected.
+- Circuit ID logged in short form (first 8 chars) when a route is established.
+- secureShuffle() uses crypto/rand Fisher-Yates for unbiased relay selection.
+
+Phase 6/7 - Presence, reliability, and privacy hardening (COMPLETE)
+---------------------------------------------------------------------
+- Heartbeat runs as a separate goroutine over a separate TCP connection to port 9500.
+- Client sends a JSON registration heartbeat packet first (type="heartbeat", payload=username)
+  then a JSON heartbeat packet every 5 seconds (type="heartbeat").
+- Server heartbeat_listener on port 9500 validates registration strictly:
+  type must be "heartbeat", payload (username) must be non-empty.
+- heartbeat_connection() enforces a 15 s read deadline per heartbeat packet.
+- On heartbeat connection drop, server closes the corresponding main data connection,
+  triggering broadcast_users() to propagate the disconnect to all peers.
+- Duplicate username rejection: server checks connections[username] before registering;
+  sends error packet and closes connection if already taken.
+- Username validation: 3-32 characters, only [a-zA-Z0-9_-] allowed.
+- broadcast_users() fires on every connect and disconnect.
+- user_list() returns at most 3 peers (crypto-shuffled, excluding the requester and
+  entries without a peer address or relay key).
+- Server logs: print only username and packet type; no ciphertext, no socket addresses.
+- directSendToUser() retries once if peer list is empty, waiting up to 2 s on the
+  state.peerUpdates channel before the second attempt.
+- Key material zeroed byte-by-byte in clearSession() and clearAllSessions() before map
+  deletion; state.privateKey nilled to force fresh key generation next session.
+- Global write mutexes (clientWriteMu, serverWriteMu) serialize concurrent writes.
+- peerUpdates channel (buffered 1) signals peer-list changes to the routing layer.
+
+Phase 8 - Documentation (COMPLETE)
+------------------------------------
+- README.md, SECURITY.md, THREAT_MODEL.md, and PROTOCOL.md present.
+- go.work present at repository root.
+- V1_PROGRESS.txt (this file) maintained.
+
+Validation status
+-----------------
+All checks pass in both modules:
+  client: go build ./...
+  client: go test ./...
+  client: go test -race ./...
+  client: go vet ./...
+  server: go build ./...
+  server: go test ./...
+  server: go test -race ./...
+  server: go vet ./...
+
+Test inventory
+--------------
+client/crypt_test.go:
+  TestSessionKeyAgreement               - X25519 peers produce identical HKDF keys
+  TestDirectionalKeysDiffer             - send key != receive key
+  TestAEADAuthenticatesAADAndCiphertext - wrong AAD rejected; bit-flip in ciphertext rejected
+  TestInvalidPublicKeyFails             - malformed base64 key rejected by deriveSessionKey
+  TestIdentitySignatureBindsSessionData - altered sender invalidates Ed25519 signature
+  TestReplayCounterRejection            - same counter rejected on second delivery
+  TestWrongSessionRejection             - session-A ciphertext rejected in session-B context
+  TestSessionClearance                  - all key maps cleared and key bytes zeroed
+
+client/p2p_test.go:
+  TestChooseRouteExcludesSenderAndRecipient - sender and recipient not in relay list
+  TestChooseRouteRequiresAtLeastTwoRelays   - nil returned with fewer than 2 candidates
+  TestMultiHopOnionConstructionAndPeeling   - 2-hop build; R1 peels first layer (correct
+                                              next hop, TTL=2); R2 peels second layer
+                                              (next=serverAddr, TTL=1, correct recipient
+                                              and payload); circuitID preserved throughout
+  TestExpiredRouteDrop                      - TTL=0 on non-exit hop triggers drop condition
+
+client/protocol_test.go:
+  TestPacketValidation   - wrong version rejected; oversized payload rejected
+  FuzzPacketValidation   - corpus-based fuzzer over validatePacket()
+
+client/e2e_test.go (integration, uses mock coordination server):
+  TestCriticalDemoPathEndToEnd  - 4 clients (Alice, Bob, Relay1, Relay2); peer discovery
+                                  confirmed; session offer routed via 2-hop onion; session
+                                  reply routed back; encrypted message delivered to Bob;
+                                  replay of same ciphertext rejected; Bob replies to Alice;
+                                  Alice receives reply; session keys cleared on /back
+  TestReconnectFlow             - Alice disconnects; reconnects with same Ed25519 identity
+                                  key; peers re-discovered; session re-established; message
+                                  delivered successfully after reconnect
+  TestRelayFailureCleanHandling - relay crashes mid-send; directSendToUser fails cleanly
+                                  within bounded timeout (~10 s); client state not corrupted
+
+server/server_test.go:
+  TestServerPacketValidation            - version, type, payload size, To size, TTL all checked
+  TestUsernameValidation                - valid and invalid username patterns enumerated
+  TestRegistrationAndDuplicateRejection - second client claiming same username gets error packet
+  TestDeliverRouting                    - deliver packet forwarded to recipient as "message";
+                                          original_type="send" rewritten correctly
+  TestHeartbeatClosesStaleConnection    - heartbeat drop removes main connection from server maps
+
+Known out-of-scope / future work
+---------------------------------
+- Tor integration
+- Global traffic-analysis resistance or cover traffic
+- Mixnet behavior
+- DHT or decentralized consensus
+- Production NAT traversal / STUN / TURN
+- Full Signal Double Ratchet (per-message forward secrecy)
+- Post-quantum cryptography
+- Persistent identity storage across restarts
+- Session expiration and automatic renegotiation
+- Complete relay failure recovery (client handles gracefully; server-side orphan sessions
+  not explicitly expired)
+- Production clustering or horizontal deployment
 
 Completed audit
 ---------------

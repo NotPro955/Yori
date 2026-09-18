@@ -19,9 +19,11 @@ func chat_session(terminal *bufio.Reader, server net.Conn, state *clientState, u
 		}
 		body = strings.TrimSpace(body)
 		if body == "/back" {
+			clearSession(state, recipient)
 			return true
 		}
 		if body == "/quit" {
+			clearAllSessions(state)
 			fmt.Fprintln(server, "quit")
 			return false
 		}
@@ -51,7 +53,7 @@ func chat_session(terminal *bufio.Reader, server net.Conn, state *clientState, u
 		}
 		if err := directSendToUser(state, recipient, Packet{Type: "send", To: recipient, Payload: ciphertext}); err != nil {
 			log.Println("direct send error:", err)
-			return false
+			continue
 		}
 		fmt.Println("sent through onion route")
 	}

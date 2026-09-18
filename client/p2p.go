@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -73,7 +74,15 @@ func handlePeerConnection(conn net.Conn, state *clientState, server net.Conn) {
 		return
 	}
 	time.Sleep(time.Duration(delay.Int64()+50) * time.Millisecond)
-	if envelope.TTL == 0 || envelope.Next == state.serverAddr {
+	if envelope.TTL == 0 && envelope.Next != state.serverAddr {
+		fmt.Println("[relay] onion packet dropped: TTL expired")
+		return
+	}
+	if envelope.Next == state.serverAddr {
+		if envelope.To == "" || envelope.Payload == "" {
+			fmt.Println("[relay] delivery error: missing destination or payload")
+			return
+		}
 		if err := send_packet(server, Packet{Type: "deliver", To: envelope.To, Payload: envelope.Payload, PublicKey: envelope.PublicKey, OriginalType: envelope.Type, CircuitID: envelope.CircuitID}); err != nil {
 			fmt.Println("server delivery error:", err)
 		}
@@ -95,10 +104,20 @@ func directSendToUser(state *clientState, username string, packet Packet) error 
 		state.mu.RUnlock()
 		route := chooseRoute(peers, state.username, username)
 		if len(route) > 0 {
-			onion, err := buildOnion(route, serverAddr, username, packet.Type, packet.Payload, packet.PublicKey)
+			onion, circuitID, err := buildOnion(route, serverAddr, username, packet.Type, packet.Payload, packet.PublicKey)
 			if err != nil {
 				return err
 			}
+			hopNames := make([]string, len(route))
+			for i, p := range route {
+				hopNames[i] = p.Username
+			}
+			shortID := circuitID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
+			}
+			fmt.Printf("Circuit established\nRoute: %s → %s → %s\nCircuit ID: %s\n",
+				state.username, strings.Join(hopNames, " → "), username, shortID)
 			return directSend(route[0].Address, state.username, Packet{Type: "onion", Payload: onion})
 		}
 		if attempt == 0 {
@@ -107,6 +126,21 @@ func directSendToUser(state *clientState, username string, packet Packet) error 
 			case <-time.After(2 * time.Second):
 			}
 		}
+	}
+	// Fallback: no onion route available (fewer than 2 relay peers online).
+	// Deliver directly through the server connection. Less private but functional.
+	state.mu.RLock()
+	serverConn := state.serverConn
+	state.mu.RUnlock()
+	if serverConn != nil {
+		fmt.Println("[warn] not enough relay peers for onion routing; delivering directly through server")
+		return send_packet(serverConn, Packet{
+			Type:         "deliver",
+			To:           username,
+			Payload:      packet.Payload,
+			PublicKey:    packet.PublicKey,
+			OriginalType: packet.Type,
+		})
 	}
 	return fmt.Errorf("no fellow peer address is available")
 }
@@ -135,15 +169,15 @@ func chooseRoute(peers map[string]Peer, sender, recipient string) []Peer {
 	return candidates[:routeLength]
 }
 
-func buildOnion(route []Peer, serverAddr, recipient, packetType, payload, publicKey string) (string, error) {
+func buildOnion(route []Peer, serverAddr, recipient, packetType, payload, publicKey string) (string, string, error) {
 	next := serverAddr
 	inner := payload
 	circuitID, err := randomID()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	for index := len(route) - 1; index >= 0; index-- {
-		envelope := onionEnvelope{Version: protocolVersion, CircuitID: circuitID, TTL: uint8(index + 1), Next: next, Payload: inner}
+		envelope := onionEnvelope{Version: protocolVersion, CircuitID: circuitID, TTL: uint8(len(route) - index), Next: next, Payload: inner}
 		if next == serverAddr {
 			envelope.To = recipient
 			envelope.Type = packetType
@@ -151,15 +185,15 @@ func buildOnion(route []Peer, serverAddr, recipient, packetType, payload, public
 		}
 		envelopeBytes, err := json.Marshal(envelope)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		inner, err = encryptOnionLayer(route[index].PublicKey, envelopeBytes)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		next = route[index].Address
 	}
-	return inner, nil
+	return inner, circuitID, nil
 }
 
 func secureShuffle(peers []Peer) {
@@ -174,11 +208,12 @@ func secureShuffle(peers []Peer) {
 }
 
 func directSend(address, username string, packet Packet) error {
-	conn, err := net.Dial("tcp", address)
+	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	if _, err := fmt.Fprintln(conn, username); err != nil {
 		return err
 	}
