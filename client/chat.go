@@ -29,12 +29,22 @@ func chat_session(terminal *bufio.Reader, server net.Conn, state *clientState, u
 			continue
 		}
 
-		envelope, err := json.Marshal(chatEnvelope{Sender: username, Body: body})
+		state.mu.Lock()
+		sessionID := state.sessionIDs[recipient]
+		state.sendCounts[recipient]++
+		counter := state.sendCounts[recipient]
+		state.mu.Unlock()
+		messageID, err := randomID()
+		if err != nil {
+			log.Println("message id error:", err)
+			continue
+		}
+		envelope, err := json.Marshal(chatEnvelope{Version: protocolVersion, MessageID: messageID, SessionID: sessionID, Counter: counter, Sender: username, Body: body})
 		if err != nil {
 			log.Println("message encoding error:", err)
 			continue
 		}
-		ciphertext, err := encryptBytes(key, envelope)
+		ciphertext, err := encryptBytesAAD(key, envelope, []byte("yori/message/v1|"+sessionID))
 		if err != nil {
 			log.Println("encrypt error:", err)
 			continue

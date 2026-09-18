@@ -2,14 +2,31 @@ package main
 
 import (
 	"bufio"
+	crand "crypto/rand"
+	"encoding/base64"
 	"encoding/json"
-	mrand "math/rand"
+	"fmt"
+	"math/big"
 	"net"
 	"strings"
 	"sync"
+	"time"
+)
+
+const (
+	protocolVersion  uint8 = 1
+	maxPacketBytes         = 64 * 1024
+	maxPayloadBytes        = 48 * 1024
+	maxUsernameBytes       = 32
+	maxTTL                 = 8
+	defaultTTL             = 5
 )
 
 type Packet struct {
+	Version      uint8  `json:"version"`
+	ID           string `json:"id"`
+	CircuitID    string `json:"circuit_id,omitempty"`
+	TTL          uint8  `json:"ttl,omitempty"`
 	Type         string `json:"type"`
 	To           string `json:"to,omitempty"`
 	Payload      string `json:"payload,omitempty"`
@@ -22,6 +39,7 @@ type Peer struct {
 	Username  string `json:"username"`
 	Address   string `json:"address"`
 	PublicKey string `json:"public_key"`
+	Identity  string `json:"identity"`
 }
 
 type Server struct {
@@ -31,6 +49,7 @@ type Server struct {
 	connections map[string]net.Conn
 	peerAddrs   map[string]string
 	peerKeys    map[string]string
+	identities  map[string]string
 	heartbeats  map[net.Addr]string
 	state_mu    sync.RWMutex
 }
@@ -48,6 +67,7 @@ func NewServer(server_addr string) {
 		connections: make(map[string]net.Conn),
 		peerAddrs:   make(map[string]string),
 		peerKeys:    make(map[string]string),
+		identities:  make(map[string]string),
 		heartbeats:  make(map[net.Addr]string),
 	}
 	go heartbeat(ser)
@@ -71,13 +91,18 @@ func (ser *Server) accept() {
 
 func client_msg(ser *Server, client net.Conn) {
 	reader := bufio.NewReader(client)
+	_ = client.SetReadDeadline(time.Now().Add(15 * time.Second))
 	registration, err := reader.ReadString('\n')
 	if err != nil {
 		client.Close()
 		return
 	}
-	parts := strings.SplitN(strings.TrimSpace(registration), "\t", 3)
+	parts := strings.SplitN(strings.TrimSpace(registration), "\t", 4)
 	username := parts[0]
+	if !validUsername(username) {
+		client.Close()
+		return
+	}
 	peerAddr := ""
 	peerKey := ""
 	if len(parts) == 2 {
@@ -85,8 +110,19 @@ func client_msg(ser *Server, client net.Conn) {
 	} else if len(parts) == 3 {
 		peerAddr = parts[1]
 		peerKey = parts[2]
+	} else if len(parts) == 4 {
+		peerAddr = parts[1]
+		peerKey = parts[2]
+		ser.state_mu.Lock()
+		ser.identities[username] = parts[3]
+		ser.state_mu.Unlock()
 	}
 	ser.state_mu.Lock()
+	if _, exists := ser.connections[username]; exists {
+		ser.state_mu.Unlock()
+		client.Close()
+		return
+	}
 	ser.clients[client.RemoteAddr()] = username
 	ser.connections[username] = client
 	ser.peerAddrs[username] = peerAddr
@@ -99,11 +135,13 @@ func client_msg(ser *Server, client net.Conn) {
 		delete(ser.connections, username)
 		delete(ser.peerAddrs, username)
 		delete(ser.peerKeys, username)
+		delete(ser.identities, username)
 		ser.state_mu.Unlock()
 		ser.broadcast_users()
 	}()
 
 	for {
+		_ = client.SetReadDeadline(time.Now().Add(5 * time.Minute))
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			break
@@ -115,10 +153,13 @@ func client_msg(ser *Server, client net.Conn) {
 
 		var packet Packet
 		if err := json.Unmarshal([]byte(line), &packet); err != nil {
-			println("[server raw] invalid packet from", client.RemoteAddr().String(), ":", strings.TrimSpace(line))
+			println("[server] invalid packet")
 			continue
 		}
-		println("[server packet] from", username, "to server payload", packet.Payload)
+		if err := validatePacket(packet); err != nil {
+			continue
+		}
+		println("[server] packet received from", username, "type", packet.Type)
 		switch packet.Type {
 		case "users":
 			write_packet(client, Packet{Type: "users", Users: ser.user_list(username)})
@@ -160,10 +201,10 @@ func (ser *Server) user_list(exclude string) []Peer {
 	users := make([]Peer, 0, len(ser.clients))
 	for _, username := range ser.clients {
 		if username != "unknown" && username != exclude && ser.peerAddrs[username] != "" && ser.peerKeys[username] != "" {
-			users = append(users, Peer{Username: username, Address: ser.peerAddrs[username], PublicKey: ser.peerKeys[username]})
+			users = append(users, Peer{Username: username, Address: ser.peerAddrs[username], PublicKey: ser.peerKeys[username], Identity: ser.identities[username]})
 		}
 	}
-	mrand.Shuffle(len(users), func(i, j int) { users[i], users[j] = users[j], users[i] })
+	secureShuffle(users)
 	if len(users) > 3 {
 		users = users[:3]
 	}
@@ -184,18 +225,95 @@ func (ser *Server) broadcast_users() {
 }
 
 func write_packet(client net.Conn, packet Packet) error {
+	if err := preparePacket(&packet); err != nil {
+		return err
+	}
 	data, err := json.Marshal(packet)
 	if err != nil {
 		return err
 	}
 	serverWriteMu.Lock()
 	defer serverWriteMu.Unlock()
-	println("[server packet] from server to", client.RemoteAddr().String(), "payload", packet.Payload)
+	_ = client.SetWriteDeadline(time.Now().Add(15 * time.Second))
+	println("[server] packet sent type", packet.Type)
 	_, err = client.Write(append(data, '\n'))
 	return err
 }
 
+func preparePacket(packet *Packet) error {
+	if packet.Version == 0 {
+		packet.Version = protocolVersion
+	}
+	if packet.Version != protocolVersion {
+		return fmt.Errorf("unsupported protocol version")
+	}
+	if packet.ID == "" {
+		id, err := randomID()
+		if err != nil {
+			return err
+		}
+		packet.ID = id
+	}
+	if packet.TTL == 0 {
+		packet.TTL = defaultTTL
+	}
+	return validatePacket(*packet)
+}
+
+func validatePacket(packet Packet) error {
+	if packet.Version != protocolVersion || packet.ID == "" || packet.Type == "" {
+		return fmt.Errorf("invalid packet metadata")
+	}
+	if !validPacketType(packet.Type) {
+		return fmt.Errorf("unknown packet type")
+	}
+	if packet.TTL > maxTTL || len(packet.Payload) > maxPayloadBytes || len(packet.To) > maxUsernameBytes {
+		return fmt.Errorf("invalid packet limits")
+	}
+	return nil
+}
+
+func validPacketType(packetType string) bool {
+	switch packetType {
+	case "users", "waiting", "message", "session_offer", "session_reply", "onion", "deliver", "heartbeat", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+func randomID() (string, error) {
+	bytes := make([]byte, 16)
+	if _, err := crand.Read(bytes); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(bytes), nil
+}
+
 var serverWriteMu sync.Mutex
+
+func secureShuffle(peers []Peer) {
+	for index := len(peers) - 1; index > 0; index-- {
+		value, err := crand.Int(crand.Reader, big.NewInt(int64(index+1)))
+		if err != nil {
+			return
+		}
+		other := int(value.Int64())
+		peers[index], peers[other] = peers[other], peers[index]
+	}
+}
+
+func validUsername(username string) bool {
+	if len(username) < 3 || len(username) > maxUsernameBytes {
+		return false
+	}
+	for _, character := range username {
+		if !(character >= 'a' && character <= 'z') && !(character >= 'A' && character <= 'Z') && !(character >= '0' && character <= '9') && character != '_' && character != '-' {
+			return false
+		}
+	}
+	return true
+}
 
 func main() {
 	NewServer(":9000")

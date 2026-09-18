@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
+	"time"
 )
 
 func heartbeat(ser *Server) {
@@ -24,11 +26,18 @@ func (ser *Server) heartbeat_listener(ln net.Listener) {
 			continue
 		}
 		reader := bufio.NewScanner(client)
+		reader.Buffer(make([]byte, 256), maxPacketBytes)
+		_ = client.SetReadDeadline(time.Now().Add(15 * time.Second))
 		if !reader.Scan() {
 			client.Close()
 			continue
 		}
-		username := strings.TrimSpace(reader.Text())
+		var registration Packet
+		if err := json.Unmarshal(reader.Bytes(), &registration); err != nil || validatePacket(registration) != nil || registration.Type != "heartbeat" || registration.Payload == "" {
+			client.Close()
+			continue
+		}
+		username := strings.TrimSpace(registration.Payload)
 		ser.state_mu.Lock()
 		ser.heartbeats[client.RemoteAddr()] = username
 		ser.state_mu.Unlock()
@@ -46,7 +55,12 @@ func heartbeat_connection(ser *Server, client net.Conn, reader *bufio.Scanner) {
 		ser.state_mu.Unlock()
 	}()
 	for {
-		if !reader.Scan() || strings.TrimSpace(reader.Text()) != "heartbeat" {
+		_ = client.SetReadDeadline(time.Now().Add(15 * time.Second))
+		if !reader.Scan() {
+			break
+		}
+		var packet Packet
+		if json.Unmarshal(reader.Bytes(), &packet) != nil || validatePacket(packet) != nil || packet.Type != "heartbeat" {
 			break
 		}
 	}

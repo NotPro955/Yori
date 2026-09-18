@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -21,7 +22,13 @@ func main() {
 	state := &clientState{
 		keys:        make(map[string][]byte),
 		outgoing:    make(map[string][]byte),
+		shared:      make(map[string][]byte),
+		sessionIDs:  make(map[string]string),
+		sendCounts:  make(map[string]uint64),
+		received:    make(map[string]map[uint64]bool),
 		peers:       make(map[string]Peer),
+		identities:  make(map[string]string),
+		keyChanged:  make(map[string]bool),
 		peerUpdates: make(chan struct{}, 1),
 	}
 
@@ -47,10 +54,15 @@ func main() {
 	if err != nil {
 		log.Fatal("relay key:", err)
 	}
+	identityKey, err := ensureIdentityKey(state)
+	if err != nil {
+		log.Fatal("identity key:", err)
+	}
+	identityPublicKey := base64.RawStdEncoding.EncodeToString(identityKey.Public().(ed25519.PublicKey))
 	go read_server(server, state)
 	go startHeartbeat("localhost:9500", username)
 
-	if _, err := fmt.Fprintf(server, "%s\t%s\t%s\n", username, peerAddress, relayKey); err != nil {
+	if _, err := fmt.Fprintf(server, "%s\t%s\t%s\t%s\n", username, peerAddress, relayKey, identityPublicKey); err != nil {
 		log.Fatal(err)
 	}
 	if err := send_packet(server, Packet{Type: "users"}); err != nil {
@@ -77,6 +89,8 @@ func main() {
 			}
 		case cmd == "/key":
 			showPublicKey(state)
+		case strings.HasPrefix(cmd, "/fingerprint "):
+			showFingerprint(cmd, state)
 		case strings.HasPrefix(cmd, "/session "):
 			if !startSession(cmd, server, state, username) {
 				return
@@ -106,6 +120,13 @@ func startSession(cmd string, server net.Conn, state *clientState, username stri
 		fmt.Println("usage: /session <user> <public-key>")
 		return true
 	}
+	state.mu.RLock()
+	changed := state.keyChanged[parts[1]]
+	state.mu.RUnlock()
+	if changed {
+		fmt.Println("WARNING: contact identity changed; session blocked")
+		return true
+	}
 	privateKey, err := ensurePrivateKey(state)
 	if err != nil {
 		fmt.Println("keygen error:", err)
@@ -116,20 +137,40 @@ func startSession(cmd string, server net.Conn, state *clientState, username stri
 		fmt.Println("invalid key:", err)
 		return true
 	}
-	offer, err := json.Marshal(sessionEnvelope{Sender: username, PublicKey: base64.RawStdEncoding.EncodeToString(privateKey.PublicKey().Bytes())})
+	sessionID, err := randomID()
+	if err != nil {
+		fmt.Println("session id error:", err)
+		return true
+	}
+	identity, err := ensureIdentityKey(state)
+	if err != nil {
+		fmt.Println("identity key error:", err)
+		return true
+	}
+	ephemeralPublicKey := base64.RawStdEncoding.EncodeToString(privateKey.PublicKey().Bytes())
+	offer, err := json.Marshal(sessionEnvelope{Sender: username, PublicKey: ephemeralPublicKey, SessionID: sessionID, Signature: sessionSignature(identity, username, sessionID, ephemeralPublicKey)})
 	if err != nil {
 		fmt.Println("session offer encoding error:", err)
 		return true
 	}
-	encryptedKey, err := encryptBytes(shared, offer)
+	encryptedKey, err := encryptBytesAAD(shared, offer, []byte("yori/session/v1/offer"))
 	if err != nil {
 		fmt.Println("session key encryption error:", err)
 		return true
 	}
 	state.mu.Lock()
-	state.keys[parts[1]] = shared
-	state.outgoing[parts[1]] = shared
+	sendKey, receiveKey, keyErr := deriveDirectionalKeys(shared, sessionID, true)
+	if keyErr == nil {
+		state.keys[parts[1]] = receiveKey
+		state.outgoing[parts[1]] = sendKey
+		state.shared[parts[1]] = shared
+		state.sessionIDs[parts[1]] = sessionID
+	}
 	state.mu.Unlock()
+	if keyErr != nil {
+		fmt.Println("session key derivation error:", keyErr)
+		return true
+	}
 	publicKey := base64.RawStdEncoding.EncodeToString(privateKey.PublicKey().Bytes())
 	if err := directSendToUser(state, parts[1], Packet{Type: "session_offer", To: parts[1], Payload: encryptedKey, PublicKey: publicKey}); err != nil {
 		log.Println("session direct send error:", err)
@@ -153,4 +194,30 @@ func startChat(cmd string, terminal *bufio.Reader, server net.Conn, state *clien
 		return true
 	}
 	return chat_session(terminal, server, state, username, parts[1], key)
+}
+
+func showFingerprint(command string, state *clientState) {
+	parts := strings.Fields(command)
+	if len(parts) != 2 {
+		fmt.Println("usage: /fingerprint <user>")
+		return
+	}
+	state.mu.RLock()
+	identity := state.identities[parts[1]]
+	changed := state.keyChanged[parts[1]]
+	state.mu.RUnlock()
+	if identity == "" {
+		fmt.Println("identity unavailable")
+		return
+	}
+	status := "UNVERIFIED"
+	if changed {
+		status = "KEY_CHANGED"
+	}
+	fingerprint, err := identityFingerprint(identity)
+	if err != nil {
+		fmt.Println("fingerprint unavailable")
+		return
+	}
+	fmt.Println(parts[1], status, fingerprint)
 }

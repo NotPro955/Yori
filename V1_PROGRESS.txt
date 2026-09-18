@@ -1,0 +1,139 @@
+Yori V1 Security/Privacy Prototype Progress
+===========================================
+
+Scope
+-----
+This is a security-focused academic/prototype P2P chat system. V1 does not attempt to become Tor, Signal, a production anonymity network, a DHT, a mixnet, or a global traffic-analysis defense.
+
+Repository layout
+-----------------
+- client/: terminal client, direct peer listener, crypto/session/message logic
+- server/: coordination/presence server and final delivery endpoint
+- Both directories are independent Go modules.
+- The repository root has no go.mod, so Go commands must run separately in client/ and server/.
+
+Completed audit
+---------------
+All 10 Go files were inspected.
+Original major findings:
+- No protocol version, packet IDs, circuit IDs, TTL, packet size limits, or replay protection.
+- Raw SHA-256 was used directly on X25519 shared secrets.
+- No authenticated long-term identity keys or key-change detection.
+- Session keys were not directionally separated.
+- Relay selection used math/rand and could repeat/loop.
+- Direct peer routing exposed peer addresses by design.
+- No connection deadlines or bounded scanner buffers.
+- Heartbeat mixed raw text and usernames.
+- Server logs exposed ciphertext and socket addresses.
+- No crypto, protocol, onion, fuzz, or reliability tests existed.
+
+Implemented so far
+------------------
+Protocol and transport:
+- Added protocol version 1.
+- Added random packet IDs, circuit IDs, and TTL fields.
+- Added packet payload/recipient size limits.
+- Added bounded Scanner buffers for client/server packet readers.
+- Added read/write deadlines on server and peer connections.
+- Added packet metadata validation.
+- Added direct peer TCP proxy connections; peers open a new connection for each hop.
+- Added onion envelopes with per-hop encrypted layers.
+- Added bounded route selection excluding sender and recipient.
+- Added per-hop TTL decrementing and circuit IDs.
+- Added bounded 50-500 ms relay jitter.
+
+Cryptography and sessions:
+- Replaced raw SHA-256 session derivation with HKDF-SHA256.
+- Added separate directional send/receive keys.
+- Added AES-GCM AAD helper functions.
+- Added in-memory Ed25519 identity keys.
+- Added signed ephemeral session offer/reply metadata.
+- Added identity fingerprints and a /fingerprint command.
+- Added in-process key-change detection and session blocking.
+- Private identity/session material is not sent to the server.
+
+Messaging:
+- Added authenticated message envelopes containing protocol version, message ID, session ID, counter, sender, and body.
+- Added session-context AAD.
+- Added monotonic send counters.
+- Added duplicate counter rejection for received messages.
+- Added crypto/protocol tests and a packet-validation fuzz target.
+
+Presence/reliability:
+- Peer discovery returns up to three peer records.
+- Peer lists broadcast when clients join/disconnect.
+- Heartbeat was being migrated from raw text to versioned JSON packets with deadlines.
+- Duplicate username rejection and username validation are implemented.
+- Server logs no longer include ciphertext or socket addresses.
+- Discovery shuffling uses crypto/rand.
+- Generated validation binaries were removed.
+
+Documentation:
+- README.md, SECURITY.md, THREAT_MODEL.md, and PROTOCOL.md were added.
+- go.work was added to describe the two independent modules.
+
+Validation completed
+--------------------
+The following checks passed after the protocol, HKDF, identity, onion, replay, and message changes:
+- client: go test ./...
+- client: go test -race ./...
+- client: go vet ./...
+- server: go test ./...
+- server: go test -race ./...
+- server: go vet ./...
+- Separate go build ./... checks passed for both modules.
+
+Important command note
+----------------------
+Running go commands from /workspaces/Yori fails with:
+  directory prefix . does not contain main module
+because there is no root go.mod. Run commands separately in client/ and server/.
+
+Current interrupted work
+------------------------
+The latest active edit was presence/reliability hardening. The heartbeat, username validation, duplicate-name rejection, secure discovery shuffle, and privacy-safe logging changes are now applied and validated.
+
+Next work items
+---------------
+Phase 1: protocol/transport hardening is complete for the current prototype.
+- Version, IDs, TTL, size limits, bounded scanners, deadlines, packet validation, and packet-type allowlists are present.
+- Protocol validation tests and a fuzz target are present.
+
+Phase 2/3: crypto and authenticated sessions are implemented and tested.
+- HKDF-SHA256, directional keys, AES-GCM AAD, Ed25519 signatures, identity fingerprints, and key-change blocking are present.
+- Full session integration tests and persistent identity storage remain useful follow-up work.
+
+Phase 4/5: onion and messaging protections are implemented at prototype level.
+- Onion layers, direct TCP hop connections, secure relay selection, TTL, circuit IDs, jitter, message IDs, counters, AAD, and duplicate rejection are present.
+- Onion integration tests, session expiration, and complete disconnect cleanup remain follow-up work.
+
+Phase 6/7: practical privacy/reliability hardening is implemented.
+- Structured heartbeat, deadlines, duplicate username rejection, bounded input, and privacy-safe logs are present.
+- Relay failure, duplicate connection, reconnect, and end-to-end integration tests remain follow-up work.
+
+Phase 8: documentation
+Create/update:
+- README.md
+- SECURITY.md
+- THREAT_MODEL.md
+- PROTOCOL.md
+Document exactly what the server, relay, and recipient know, plus direct-P2P IP exposure and traffic-analysis limitations.
+
+Final required checks
+---------------------
+Run separately in both client/ and server/:
+- go build ./...
+- go test ./...
+- go test -race ./...
+- go vet ./...
+
+Known out-of-scope/future work
+------------------------------
+- Tor integration
+- global traffic-analysis resistance
+- cover traffic/mixnet behavior
+- DHT/decentralized consensus
+- production NAT traversal/STUN/TURN
+- full Signal Double Ratchet
+- post-quantum cryptography
+- production clustering/deployment

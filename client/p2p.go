@@ -7,7 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	mrand "math/rand"
+	"math/big"
 	"net"
 	"time"
 )
@@ -42,6 +42,8 @@ func startPeerListener(state *clientState, server net.Conn) (string, error) {
 
 func handlePeerConnection(conn net.Conn, state *clientState, server net.Conn) {
 	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+	_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
 	reader := bufio.NewReader(conn)
 	if _, err := reader.ReadString('\n'); err != nil {
 		return
@@ -54,14 +56,25 @@ func handlePeerConnection(conn net.Conn, state *clientState, server net.Conn) {
 	if err := json.Unmarshal([]byte(line), &packet); err != nil || packet.Type != "onion" {
 		return
 	}
+	if err := validatePacket(packet); err != nil {
+		return
+	}
 	envelope, err := decryptOnionLayer(state, packet.Payload)
 	if err != nil {
 		fmt.Println("onion decrypt error:", err)
 		return
 	}
-	time.Sleep(time.Duration(mrand.Intn(451)+50) * time.Millisecond)
-	if envelope.Next == state.serverAddr {
-		if err := send_packet(server, Packet{Type: "deliver", To: envelope.To, Payload: envelope.Payload, PublicKey: envelope.PublicKey, OriginalType: envelope.Type}); err != nil {
+	if envelope.Version != protocolVersion || envelope.CircuitID == "" || envelope.TTL == 0 {
+		return
+	}
+	envelope.TTL--
+	delay, err := crand.Int(crand.Reader, big.NewInt(451))
+	if err != nil {
+		return
+	}
+	time.Sleep(time.Duration(delay.Int64()+50) * time.Millisecond)
+	if envelope.TTL == 0 || envelope.Next == state.serverAddr {
+		if err := send_packet(server, Packet{Type: "deliver", To: envelope.To, Payload: envelope.Payload, PublicKey: envelope.PublicKey, OriginalType: envelope.Type, CircuitID: envelope.CircuitID}); err != nil {
 			fmt.Println("server delivery error:", err)
 		}
 		return
@@ -108,10 +121,16 @@ func chooseRoute(peers map[string]Peer, sender, recipient string) []Peer {
 	if len(candidates) == 0 {
 		return nil
 	}
-	mrand.Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
-	routeLength := mrand.Intn(3) + 3
+	secureShuffle(candidates)
+	routeLength := 2
+	if len(candidates) > 5 {
+		routeLength = 5
+	}
 	if routeLength > len(candidates) {
 		routeLength = len(candidates)
+	}
+	if routeLength < 2 {
+		return nil
 	}
 	return candidates[:routeLength]
 }
@@ -119,8 +138,12 @@ func chooseRoute(peers map[string]Peer, sender, recipient string) []Peer {
 func buildOnion(route []Peer, serverAddr, recipient, packetType, payload, publicKey string) (string, error) {
 	next := serverAddr
 	inner := payload
+	circuitID, err := randomID()
+	if err != nil {
+		return "", err
+	}
 	for index := len(route) - 1; index >= 0; index-- {
-		envelope := onionEnvelope{Next: next, Payload: inner}
+		envelope := onionEnvelope{Version: protocolVersion, CircuitID: circuitID, TTL: uint8(index + 1), Next: next, Payload: inner}
 		if next == serverAddr {
 			envelope.To = recipient
 			envelope.Type = packetType
@@ -139,6 +162,17 @@ func buildOnion(route []Peer, serverAddr, recipient, packetType, payload, public
 	return inner, nil
 }
 
+func secureShuffle(peers []Peer) {
+	for index := len(peers) - 1; index > 0; index-- {
+		value, err := crand.Int(crand.Reader, big.NewInt(int64(index+1)))
+		if err != nil {
+			return
+		}
+		other := int(value.Int64())
+		peers[index], peers[other] = peers[other], peers[index]
+	}
+}
+
 func directSend(address, username string, packet Packet) error {
 	conn, err := net.Dial("tcp", address)
 	if err != nil {
@@ -146,6 +180,9 @@ func directSend(address, username string, packet Packet) error {
 	}
 	defer conn.Close()
 	if _, err := fmt.Fprintln(conn, username); err != nil {
+		return err
+	}
+	if err := preparePacket(&packet); err != nil {
 		return err
 	}
 	data, err := json.Marshal(packet)
