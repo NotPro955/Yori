@@ -11,17 +11,29 @@ import (
 type Packet struct {
 	Type         string `json:"type"`
 	To           string `json:"to,omitempty"`
-	Next         string `json:"next,omitempty"`
 	Payload      string `json:"payload,omitempty"`
 	PublicKey    string `json:"public_key,omitempty"`
-	Hops         int    `json:"hops,omitempty"`
 	OriginalType string `json:"original_type,omitempty"`
 	Users        []Peer `json:"users,omitempty"`
 }
 
 type Peer struct {
-	Username string `json:"username"`
-	Address  string `json:"address"`
+	Username  string `json:"username"`
+	Address   string `json:"address"`
+	PublicKey string `json:"public_key"`
+}
+
+type onionEnvelope struct {
+	Next      string `json:"next"`
+	To        string `json:"to,omitempty"`
+	Type      string `json:"type"`
+	Payload   string `json:"payload"`
+	PublicKey string `json:"public_key,omitempty"`
+}
+
+type onionPacket struct {
+	Ephemeral  string `json:"ephemeral"`
+	Ciphertext string `json:"ciphertext"`
 }
 
 type chatEnvelope struct {
@@ -30,14 +42,16 @@ type chatEnvelope struct {
 }
 
 type sessionEnvelope struct {
-	Sender string `json:"sender"`
-	Key    []byte `json:"key"`
+	Sender    string `json:"sender"`
+	PublicKey string `json:"public_key"`
 }
 
 type clientState struct {
 	mu          sync.RWMutex
 	username    string
 	privateKey  *ecdh.PrivateKey
+	relayKey    *ecdh.PrivateKey
+	serverAddr  string
 	keys        map[string][]byte
 	outgoing    map[string][]byte
 	peers       map[string]Peer

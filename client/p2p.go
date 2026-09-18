@@ -2,6 +2,9 @@ package main
 
 import (
 	"bufio"
+	"crypto/ecdh"
+	crand "crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	mrand "math/rand"
@@ -43,44 +46,47 @@ func handlePeerConnection(conn net.Conn, state *clientState, server net.Conn) {
 	if _, err := reader.ReadString('\n'); err != nil {
 		return
 	}
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return
+	}
+	var packet Packet
+	if err := json.Unmarshal([]byte(line), &packet); err != nil || packet.Type != "onion" {
+		return
+	}
+	envelope, err := decryptOnionLayer(state, packet.Payload)
+	if err != nil {
+		fmt.Println("onion decrypt error:", err)
+		return
+	}
+	time.Sleep(time.Duration(mrand.Intn(451)+50) * time.Millisecond)
+	if envelope.Next == state.serverAddr {
+		if err := send_packet(server, Packet{Type: "deliver", To: envelope.To, Payload: envelope.Payload, PublicKey: envelope.PublicKey, OriginalType: envelope.Type}); err != nil {
+			fmt.Println("server delivery error:", err)
 		}
-		var packet Packet
-		if err := json.Unmarshal([]byte(line), &packet); err != nil {
-			continue
-		}
-		if packet.Hops <= 0 {
-			packet.OriginalType = packet.Type
-			packet.Type = "deliver"
-			packet.Next = ""
-			if err := send_packet(server, packet); err != nil {
-				fmt.Println("server delivery error:", err)
-			}
-			return
-		}
-		if err := forwardToPeer(state, packet); err != nil {
-			fmt.Println("peer forwarding error:", err)
-		}
+		return
+	}
+	if err := directSend(envelope.Next, state.username, Packet{Type: "onion", Payload: envelope.Payload}); err != nil {
+		fmt.Println("peer forwarding error:", err)
 	}
 }
 
 func directSendToUser(state *clientState, username string, packet Packet) error {
 	for attempt := 0; attempt < 2; attempt++ {
 		state.mu.RLock()
-		candidates := make([]Peer, 0, len(state.peers))
-		for _, peer := range state.peers {
-			if peer.Address != "" && peer.Username != username && peer.Username != state.username {
-				candidates = append(candidates, peer)
-			}
+		peers := make(map[string]Peer, len(state.peers))
+		for name, peer := range state.peers {
+			peers[name] = peer
 		}
+		serverAddr := state.serverAddr
 		state.mu.RUnlock()
-		if len(candidates) > 0 {
-			nextAddress := candidates[mrand.Intn(len(candidates))].Address
-			packet.Next = nextAddress
-			return directSend(nextAddress, state.username, packet)
+		route := chooseRoute(peers, state.username, username)
+		if len(route) > 0 {
+			onion, err := buildOnion(route, serverAddr, username, packet.Type, packet.Payload, packet.PublicKey)
+			if err != nil {
+				return err
+			}
+			return directSend(route[0].Address, state.username, Packet{Type: "onion", Payload: onion})
 		}
 		if attempt == 0 {
 			select {
@@ -92,22 +98,45 @@ func directSendToUser(state *clientState, username string, packet Packet) error 
 	return fmt.Errorf("no fellow peer address is available")
 }
 
-func forwardToPeer(state *clientState, packet Packet) error {
-	state.mu.RLock()
-	peers := make([]Peer, 0, len(state.peers))
-	for _, peer := range state.peers {
-		if peer.Address != "" && peer.Address != packet.Next && peer.Username != packet.To && peer.Username != state.username {
-			peers = append(peers, peer)
+func chooseRoute(peers map[string]Peer, sender, recipient string) []Peer {
+	candidates := make([]Peer, 0, len(peers))
+	for name, peer := range peers {
+		if name != sender && name != recipient && peer.Address != "" && peer.PublicKey != "" {
+			candidates = append(candidates, peer)
 		}
 	}
-	state.mu.RUnlock()
-	if len(peers) == 0 {
-		return fmt.Errorf("no peer available for next hop")
+	if len(candidates) == 0 {
+		return nil
 	}
-	peer := peers[0]
-	packet.Hops--
-	packet.Next = peer.Address
-	return directSend(peer.Address, state.username, packet)
+	mrand.Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
+	routeLength := mrand.Intn(3) + 3
+	if routeLength > len(candidates) {
+		routeLength = len(candidates)
+	}
+	return candidates[:routeLength]
+}
+
+func buildOnion(route []Peer, serverAddr, recipient, packetType, payload, publicKey string) (string, error) {
+	next := serverAddr
+	inner := payload
+	for index := len(route) - 1; index >= 0; index-- {
+		envelope := onionEnvelope{Next: next, Payload: inner}
+		if next == serverAddr {
+			envelope.To = recipient
+			envelope.Type = packetType
+			envelope.PublicKey = publicKey
+		}
+		envelopeBytes, err := json.Marshal(envelope)
+		if err != nil {
+			return "", err
+		}
+		inner, err = encryptOnionLayer(route[index].PublicKey, envelopeBytes)
+		if err != nil {
+			return "", err
+		}
+		next = route[index].Address
+	}
+	return inner, nil
 }
 
 func directSend(address, username string, packet Packet) error {
@@ -125,4 +154,17 @@ func directSend(address, username string, packet Packet) error {
 	}
 	_, err = conn.Write(append(data, '\n'))
 	return err
+}
+
+func relayPublicKey(state *clientState) (string, error) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.relayKey == nil {
+		key, err := ecdh.X25519().GenerateKey(crand.Reader)
+		if err != nil {
+			return "", err
+		}
+		state.relayKey = key
+	}
+	return base64.RawStdEncoding.EncodeToString(state.relayKey.PublicKey().Bytes()), nil
 }

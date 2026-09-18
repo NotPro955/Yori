@@ -7,6 +7,7 @@ import (
 	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 )
 
@@ -85,4 +86,57 @@ func deriveSessionKey(privateKey *ecdh.PrivateKey, publicKey string) ([]byte, er
 	}
 	sum := sha256.Sum256(shared)
 	return sum[:], nil
+}
+
+func encryptOnionLayer(peerPublicKey string, plaintext []byte) (string, error) {
+	ephemeral, err := ecdh.X25519().GenerateKey(crand.Reader)
+	if err != nil {
+		return "", err
+	}
+	shared, err := deriveSessionKey(ephemeral, peerPublicKey)
+	if err != nil {
+		return "", err
+	}
+	ciphertext, err := encryptBytes(shared, plaintext)
+	if err != nil {
+		return "", err
+	}
+	packet, err := json.Marshal(onionPacket{
+		Ephemeral:  base64.RawStdEncoding.EncodeToString(ephemeral.PublicKey().Bytes()),
+		Ciphertext: ciphertext,
+	})
+	if err != nil {
+		return "", err
+	}
+	return base64.RawStdEncoding.EncodeToString(packet), nil
+}
+
+func decryptOnionLayer(state *clientState, encoded string) (onionEnvelope, error) {
+	packetBytes, err := base64.RawStdEncoding.DecodeString(encoded)
+	if err != nil {
+		return onionEnvelope{}, err
+	}
+	var packet onionPacket
+	if err := json.Unmarshal(packetBytes, &packet); err != nil {
+		return onionEnvelope{}, err
+	}
+	state.mu.RLock()
+	relayKey := state.relayKey
+	state.mu.RUnlock()
+	if relayKey == nil {
+		return onionEnvelope{}, fmt.Errorf("relay key unavailable")
+	}
+	shared, err := deriveSessionKey(relayKey, packet.Ephemeral)
+	if err != nil {
+		return onionEnvelope{}, err
+	}
+	plaintext, err := decryptBytes(shared, packet.Ciphertext)
+	if err != nil {
+		return onionEnvelope{}, err
+	}
+	var envelope onionEnvelope
+	if err := json.Unmarshal(plaintext, &envelope); err != nil {
+		return onionEnvelope{}, err
+	}
+	return envelope, nil
 }

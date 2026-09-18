@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	mrand "math/rand"
 	"net"
 	"os"
 	"strings"
@@ -38,15 +37,20 @@ func main() {
 	}
 	state.mu.Lock()
 	state.username = username
+	state.serverAddr = server.RemoteAddr().String()
 	state.mu.Unlock()
 	peerAddress, err := startPeerListener(state, server)
 	if err != nil {
 		log.Fatal("peer listener:", err)
 	}
+	relayKey, err := relayPublicKey(state)
+	if err != nil {
+		log.Fatal("relay key:", err)
+	}
 	go read_server(server, state)
 	go startHeartbeat("localhost:9500", username)
 
-	if _, err := fmt.Fprintf(server, "%s\t%s\n", username, peerAddress); err != nil {
+	if _, err := fmt.Fprintf(server, "%s\t%s\t%s\n", username, peerAddress, relayKey); err != nil {
 		log.Fatal(err)
 	}
 	if err := send_packet(server, Packet{Type: "users"}); err != nil {
@@ -112,12 +116,7 @@ func startSession(cmd string, server net.Conn, state *clientState, username stri
 		fmt.Println("invalid key:", err)
 		return true
 	}
-	aliceKey, err := randomAESKey()
-	if err != nil {
-		fmt.Println("session key error:", err)
-		return true
-	}
-	offer, err := json.Marshal(sessionEnvelope{Sender: username, Key: aliceKey})
+	offer, err := json.Marshal(sessionEnvelope{Sender: username, PublicKey: base64.RawStdEncoding.EncodeToString(privateKey.PublicKey().Bytes())})
 	if err != nil {
 		fmt.Println("session offer encoding error:", err)
 		return true
@@ -128,11 +127,11 @@ func startSession(cmd string, server net.Conn, state *clientState, username stri
 		return true
 	}
 	state.mu.Lock()
-	state.keys[parts[1]] = aliceKey
-	state.outgoing[parts[1]] = aliceKey
+	state.keys[parts[1]] = shared
+	state.outgoing[parts[1]] = shared
 	state.mu.Unlock()
 	publicKey := base64.RawStdEncoding.EncodeToString(privateKey.PublicKey().Bytes())
-	if err := directSendToUser(state, parts[1], Packet{Type: "session_offer", To: parts[1], Payload: encryptedKey, PublicKey: publicKey, Hops: mrand.Intn(3) + 3}); err != nil {
+	if err := directSendToUser(state, parts[1], Packet{Type: "session_offer", To: parts[1], Payload: encryptedKey, PublicKey: publicKey}); err != nil {
 		log.Println("session direct send error:", err)
 		return false
 	}

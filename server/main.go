@@ -12,17 +12,16 @@ import (
 type Packet struct {
 	Type         string `json:"type"`
 	To           string `json:"to,omitempty"`
-	Next         string `json:"next,omitempty"`
 	Payload      string `json:"payload,omitempty"`
 	PublicKey    string `json:"public_key,omitempty"`
-	Hops         int    `json:"hops,omitempty"`
 	OriginalType string `json:"original_type,omitempty"`
 	Users        []Peer `json:"users,omitempty"`
 }
 
 type Peer struct {
-	Username string `json:"username"`
-	Address  string `json:"address"`
+	Username  string `json:"username"`
+	Address   string `json:"address"`
+	PublicKey string `json:"public_key"`
 }
 
 type Server struct {
@@ -31,6 +30,7 @@ type Server struct {
 	clients     map[net.Addr]string
 	connections map[string]net.Conn
 	peerAddrs   map[string]string
+	peerKeys    map[string]string
 	heartbeats  map[net.Addr]string
 	state_mu    sync.RWMutex
 }
@@ -47,6 +47,7 @@ func NewServer(server_addr string) {
 		clients:     make(map[net.Addr]string),
 		connections: make(map[string]net.Conn),
 		peerAddrs:   make(map[string]string),
+		peerKeys:    make(map[string]string),
 		heartbeats:  make(map[net.Addr]string),
 	}
 	go heartbeat(ser)
@@ -75,16 +76,21 @@ func client_msg(ser *Server, client net.Conn) {
 		client.Close()
 		return
 	}
-	parts := strings.SplitN(strings.TrimSpace(registration), "\t", 2)
+	parts := strings.SplitN(strings.TrimSpace(registration), "\t", 3)
 	username := parts[0]
 	peerAddr := ""
+	peerKey := ""
 	if len(parts) == 2 {
 		peerAddr = parts[1]
+	} else if len(parts) == 3 {
+		peerAddr = parts[1]
+		peerKey = parts[2]
 	}
 	ser.state_mu.Lock()
 	ser.clients[client.RemoteAddr()] = username
 	ser.connections[username] = client
 	ser.peerAddrs[username] = peerAddr
+	ser.peerKeys[username] = peerKey
 	ser.state_mu.Unlock()
 	ser.broadcast_users()
 	defer func() {
@@ -92,6 +98,7 @@ func client_msg(ser *Server, client net.Conn) {
 		delete(ser.clients, client.RemoteAddr())
 		delete(ser.connections, username)
 		delete(ser.peerAddrs, username)
+		delete(ser.peerKeys, username)
 		ser.state_mu.Unlock()
 		ser.broadcast_users()
 	}()
@@ -152,8 +159,8 @@ func (ser *Server) user_list(exclude string) []Peer {
 	defer ser.state_mu.RUnlock()
 	users := make([]Peer, 0, len(ser.clients))
 	for _, username := range ser.clients {
-		if username != "unknown" && username != exclude && ser.peerAddrs[username] != "" {
-			users = append(users, Peer{Username: username, Address: ser.peerAddrs[username]})
+		if username != "unknown" && username != exclude && ser.peerAddrs[username] != "" && ser.peerKeys[username] != "" {
+			users = append(users, Peer{Username: username, Address: ser.peerAddrs[username], PublicKey: ser.peerKeys[username]})
 		}
 	}
 	mrand.Shuffle(len(users), func(i, j int) { users[i], users[j] = users[j], users[i] })

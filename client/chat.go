@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	mrand "math/rand"
 	"net"
 	"strings"
 )
@@ -40,11 +39,10 @@ func chat_session(terminal *bufio.Reader, server net.Conn, state *clientState, u
 			log.Println("encrypt error:", err)
 			continue
 		}
-		hops := mrand.Intn(3) + 3
-		if err := directSendToUser(state, recipient, Packet{Type: "send", To: recipient, Payload: ciphertext, Hops: hops}); err != nil {
+		if err := directSendToUser(state, recipient, Packet{Type: "send", To: recipient, Payload: ciphertext}); err != nil {
 			log.Println("direct send error:", err)
 			return false
 		}
-		fmt.Println("sent via", hops, "hops")
+		fmt.Println("sent through onion route")
 	}
 }

@@ -2,9 +2,9 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	mrand "math/rand"
 	"net"
 	"strings"
 )
@@ -58,46 +58,38 @@ func read_server(server net.Conn, state *clientState) {
 				continue
 			}
 			var offer sessionEnvelope
-			if err := json.Unmarshal(offerBytes, &offer); err != nil || offer.Sender == "" || len(offer.Key) == 0 {
+			if err := json.Unmarshal(offerBytes, &offer); err != nil || offer.Sender == "" || offer.PublicKey == "" {
 				fmt.Println("invalid session offer")
 				continue
 			}
-			bobKey, err := randomAESKey()
-			if err != nil {
-				fmt.Println("session key error:", err)
-				continue
-			}
 			state.mu.Lock()
-			state.keys[offer.Sender] = offer.Key
-			state.outgoing[offer.Sender] = bobKey
+			state.keys[offer.Sender] = shared
+			state.outgoing[offer.Sender] = shared
 			state.mu.Unlock()
 			state.mu.RLock()
 			username := state.username
 			state.mu.RUnlock()
-			reply, err := json.Marshal(sessionEnvelope{Sender: username, Key: bobKey})
+			reply, err := json.Marshal(sessionEnvelope{Sender: username, PublicKey: base64.RawStdEncoding.EncodeToString(privateKey.PublicKey().Bytes())})
 			if err != nil {
 				fmt.Println("session reply encoding error:", err)
 				continue
 			}
-			encryptedBobKey, err := encryptBytes(offer.Key, reply)
+			encryptedBobKey, err := encryptBytes(shared, reply)
 			if err != nil {
 				fmt.Println("session reply encryption error:", err)
 				continue
 			}
-			if err := directSendToUser(state, offer.Sender, Packet{Type: "session_reply", To: offer.Sender, Payload: encryptedBobKey, Hops: mrand.Intn(3) + 3}); err != nil {
+			if err := directSendToUser(state, offer.Sender, Packet{Type: "session_reply", To: offer.Sender, Payload: encryptedBobKey}); err != nil {
 				fmt.Println("session reply send error:", err)
 				return
 			}
 			fmt.Println("session established with", offer.Sender)
 		case "session_reply":
-			sender, bobKey, err := decryptSessionReply(state, packet.Payload)
+			sender, err := decryptSessionReply(state, packet.Payload)
 			if err != nil {
 				fmt.Println("session reply decrypt error:", err)
 				continue
 			}
-			state.mu.Lock()
-			state.keys[sender] = bobKey
-			state.mu.Unlock()
 			fmt.Println("session established with", sender)
 		case "relay":
 			if err := send_packet(server, packet); err != nil {
@@ -145,7 +137,7 @@ func decryptChatEnvelope(state *clientState, ciphertext string) (chatEnvelope, e
 	return chatEnvelope{}, lastErr
 }
 
-func decryptSessionReply(state *clientState, ciphertext string) (string, []byte, error) {
+func decryptSessionReply(state *clientState, ciphertext string) (string, error) {
 	state.mu.RLock()
 	keys := make(map[string][]byte, len(state.keys))
 	for sender, key := range state.keys {
@@ -161,14 +153,14 @@ func decryptSessionReply(state *clientState, ciphertext string) (string, []byte,
 			continue
 		}
 		var reply sessionEnvelope
-		if err := json.Unmarshal(plaintext, &reply); err != nil || reply.Sender == "" || len(reply.Key) == 0 {
+		if err := json.Unmarshal(plaintext, &reply); err != nil || reply.Sender == "" {
 			lastErr = fmt.Errorf("invalid session reply")
 			continue
 		}
-		return reply.Sender, reply.Key, nil
+		return reply.Sender, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no pending session keys")
 	}
-	return "", nil, lastErr
+	return "", lastErr
 }
