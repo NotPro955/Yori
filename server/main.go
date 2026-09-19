@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -37,15 +39,17 @@ type Packet struct {
 
 type Peer struct {
 	Username      string `json:"username"`
-	Address       string `json:"address"`
-	PublicKey     string `json:"public_key"`
-	Identity      string `json:"identity"`
-	PreSessionKey string `json:"pre_session_key"`
+	Address       string `json:"address,omitempty"`
+	PublicKey     string `json:"public_key,omitempty"`
+	Identity      string `json:"identity,omitempty"`
+	PreSessionPub string `json:"presession_pub,omitempty"`
+	PreSessionKey string `json:"pre_session_key,omitempty"`
 }
 
 type Server struct {
 	server_addr    string
 	listener       net.Listener
+	httpListener   *chanListener
 	clients        map[net.Addr]string
 	connections    map[string]net.Conn
 	peerAddrs      map[string]string
@@ -95,21 +99,48 @@ func NewServer(server_addr string) {
 }
 
 func (ser *Server) accept() {
+	if ser.httpListener == nil {
+		ser.httpListener = newChanListener(ser.listener.Addr())
+		go func() {
+			_ = http.Serve(ser.httpListener, setupHTTP(ser))
+		}()
+	}
+
 	for {
 		client, err := ser.listener.Accept()
 		if err != nil {
+			if ser.httpListener != nil {
+				_ = ser.httpListener.Close()
+			}
 			return
 		}
+
+		reader := bufio.NewReader(client)
+		_ = client.SetReadDeadline(time.Now().Add(15 * time.Second))
+		peek, err := reader.Peek(4)
+		if err == nil {
+			sp := string(peek)
+			if sp == "GET " || sp == "POST" || sp == "HEAD" || sp == "OPTI" {
+				_ = client.SetReadDeadline(time.Time{})
+				ser.httpListener.ch <- &bufferedConn{Conn: client, r: reader}
+				continue
+			}
+		}
+
 		ser.state_mu.Lock()
 		ser.clients[client.RemoteAddr()] = "unknown"
 		ser.state_mu.Unlock()
 
-		go client_msg(ser, client)
+		go client_msg_with_reader(ser, client, reader)
 	}
 }
 
 func client_msg(ser *Server, client net.Conn) {
 	reader := bufio.NewReader(client)
+	client_msg_with_reader(ser, client, reader)
+}
+
+func client_msg_with_reader(ser *Server, client net.Conn, reader *bufio.Reader) {
 	_ = client.SetReadDeadline(time.Now().Add(15 * time.Second))
 	registration, err := reader.ReadString('\n')
 	if err != nil {
@@ -151,7 +182,7 @@ func client_msg(ser *Server, client net.Conn) {
 	ser.peerAddrs[username] = peerAddr
 	ser.peerKeys[username] = peerKey
 	ser.state_mu.Unlock()
-	ser.writeLog("[server] user registered: " + username)
+	ser.writeLog("[server] client connected: " + username)
 	ser.broadcast_users()
 	defer func() {
 		ser.state_mu.Lock()
@@ -179,24 +210,27 @@ func client_msg(ser *Server, client net.Conn) {
 
 		var packet Packet
 		if err := json.Unmarshal([]byte(line), &packet); err != nil {
-			ser.writeLog("[server] invalid packet from " + username)
 			continue
 		}
 		if err := validatePacket(packet); err != nil {
 			continue
 		}
-		switch packet.Type {
-		case "users":
-			write_packet(client, Packet{Type: "users", Users: ser.user_list(username)})
-		case "deliver":
-			ser.deliver(client, username, packet)
-		}
+		ser.handlePacket(client, username, packet)
+	}
+}
+
+func (ser *Server) handlePacket(client net.Conn, username string, packet Packet) {
+	switch packet.Type {
+	case "users":
+		_ = write_packet(client, Packet{Type: "users", Users: ser.user_list(username)})
+	case "deliver":
+		ser.deliver(client, username, packet)
 	}
 }
 
 func (ser *Server) deliver(sender net.Conn, current string, packet Packet) {
 	if packet.To == "" || packet.Payload == "" {
-		write_packet(sender, Packet{Type: "error", Payload: "invalid message route"})
+		_ = write_packet(sender, Packet{Type: "error", Payload: "invalid message route"})
 		return
 	}
 
@@ -204,20 +238,24 @@ func (ser *Server) deliver(sender net.Conn, current string, packet Packet) {
 	peerConn, ok := ser.connections[packet.To]
 	if !ok || peerConn == nil {
 		ser.state_mu.RUnlock()
-		write_packet(sender, Packet{Type: "waiting", To: packet.To, Payload: "waiting for peer"})
+		_ = write_packet(sender, Packet{Type: "waiting", To: packet.To, Payload: "waiting for peer"})
 		return
 	}
 	ser.state_mu.RUnlock()
-	deliveryType := packet.OriginalType
-	if deliveryType == "" {
-		deliveryType = packet.Type
-	}
-	if deliveryType == "send" {
-		deliveryType = "message"
-	}
 	ser.writeLog("[server] packet forwarded to " + packet.To)
-	if err := write_packet(peerConn, Packet{Type: deliveryType, Payload: packet.Payload, PublicKey: packet.PublicKey}); err != nil {
-		write_packet(sender, Packet{Type: "error", Payload: "delivery failed"})
+	// A delivery envelope deliberately has no application packet type.  The
+	// receiver gets only the opaque payload plus the ephemeral public key needed
+	// to decrypt it.  In particular, do not copy OriginalType: that field used
+	// to reveal session/message/onion metadata to the server and recipient's
+	// transport layer.
+	if err := write_packet(peerConn, Packet{
+		Type:      "deliver",
+		CircuitID: packet.CircuitID,
+		TTL:       packet.TTL,
+		Payload:   packet.Payload,
+		PublicKey: packet.PublicKey,
+	}); err != nil {
+		_ = write_packet(sender, Packet{Type: "error", Payload: "delivery failed"})
 	}
 }
 
@@ -226,14 +264,18 @@ func (ser *Server) user_list(exclude string) []Peer {
 	defer ser.state_mu.RUnlock()
 	users := make([]Peer, 0, len(ser.clients))
 	for _, username := range ser.clients {
-		if username != "unknown" && username != exclude && ser.peerAddrs[username] != "" && ser.peerKeys[username] != "" {
-			users = append(users, Peer{Username: username, Address: ser.peerAddrs[username], PublicKey: ser.peerKeys[username], Identity: ser.identities[username], PreSessionKey: ser.preSessionKeys[username]})
+		if username != "unknown" && username != exclude && (ser.preSessionKeys[username] != "" || (ser.peerAddrs[username] != "" && ser.peerKeys[username] != "")) {
+			users = append(users, Peer{
+				Username:      username,
+				Address:       ser.peerAddrs[username],
+				PublicKey:     ser.peerKeys[username],
+				Identity:      ser.identities[username],
+				PreSessionPub: ser.preSessionKeys[username],
+				PreSessionKey: ser.preSessionKeys[username],
+			})
 		}
 	}
 	secureShuffle(users)
-	if len(users) > 3 {
-		users = users[:3]
-	}
 	return users
 }
 
@@ -341,5 +383,13 @@ func validUsername(username string) bool {
 }
 
 func main() {
-	NewServer(":9000")
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "9000"
+	}
+	addr := "0.0.0.0:" + port
+	if renderHost := os.Getenv("RENDER_EXTERNAL_HOSTNAME"); renderHost != "" {
+		fmt.Println("Public URL: https://" + renderHost)
+	}
+	NewServer(addr)
 }

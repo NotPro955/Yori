@@ -22,8 +22,9 @@ func startTestServer(t *testing.T) (*Server, string, func()) {
 		connections: make(map[string]net.Conn),
 		peerAddrs:   make(map[string]string),
 		peerKeys:    make(map[string]string),
-		identities:  make(map[string]string),
-		heartbeats:  make(map[net.Addr]string),
+		identities:     make(map[string]string),
+		preSessionKeys: make(map[string]string),
+		heartbeats:     make(map[net.Addr]string),
 	}
 	go ser.accept()
 	cleanup := func() {
@@ -188,7 +189,8 @@ func TestDeliverRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Bob should receive message packet
+	// Bob should receive an opaque delivery envelope. The server never turns a
+	// client-supplied subtype into an observable transport packet type.
 	_ = bobConn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	bobLine, err := bobReader.ReadString('\n')
 	if err != nil {
@@ -198,7 +200,7 @@ func TestDeliverRouting(t *testing.T) {
 	if err := json.Unmarshal([]byte(bobLine), &rcvPkt); err != nil {
 		t.Fatal(err)
 	}
-	if rcvPkt.Type != "message" || rcvPkt.Payload != "opaque-ciphertext-for-bob" {
+	if rcvPkt.Type != "deliver" || rcvPkt.Payload != "opaque-ciphertext-for-bob" {
 		t.Fatalf("unexpected packet received by bob: %+v", rcvPkt)
 	}
 }

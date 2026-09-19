@@ -11,7 +11,10 @@ import (
 func heartbeat(ser *Server) {
 	ln, err := net.Listen("tcp", ":9500")
 	if err != nil {
-		panic(err)
+		// Browser clients use WebSocket ping/pong.  The legacy TCP heartbeat
+		// listener is therefore optional and must not prevent the web server
+		// from starting when that port is already in use.
+		return
 	}
 	ser.heartbeat_listener(ln)
 }

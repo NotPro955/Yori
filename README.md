@@ -1,50 +1,42 @@
 # Yori
 
-Yori is a terminal-only, security-focused academic P2P chat prototype written in Go.
+Yori is a browser-based, security-focused chat prototype deployed as a public Render service. The Go server serves the web application and provides coordination, presence, and opaque packet delivery.
 
-## Layout
+## Use Yori
 
-- `client/` is an independent Go module for the terminal client.
-- `server/` is an independent Go module for coordination, presence, and final delivery.
-- `go.work` describes both modules, but the repository root contains no Go package. Run build/test commands inside each module.
+1. Open `https://<your-yori-service>.onrender.com`.
+2. Enter a username.
+3. Select an online peer and connect.
+4. Use Yori normally.
 
-## Run
+The browser derives its WebSocket endpoint from the page URL. A Render page therefore connects to `wss://<your-yori-service>.onrender.com/ws` automatically; users never need to enter an address.
 
-Start the server:
+## Deploy on Render
 
-```bash
-cd server
-go run .
-```
+Render supplies the `PORT` environment variable. The server listens on `0.0.0.0:$PORT`; no additional server address configuration is required. When Render provides `RENDER_EXTERNAL_HOSTNAME`, the server prints its public URL during startup.
 
-Start multiple clients in separate terminals:
+Build the server from the `server` directory:
 
 ```bash
-cd client
-go run .
+go build -o yori-server .
 ```
 
-Clients need directly reachable peer listener addresses. Localhost works for same-machine testing; LAN or internet use requires suitable firewall/NAT configuration.
+Start command:
 
-## Client flow
-
-1. Connect clients with unique usernames.
-2. Use `/users` to inspect discovered peers.
-3. Exchange public session keys out of band.
-4. Start a session with `/session <user> <public-key>`.
-5. Chat with `/chat <user>`.
-6. Use `/fingerprint <user>` to inspect the discovered identity fingerprint.
-7. Use `/back` to leave chat and `/quit` to exit.
+```bash
+./yori-server
+```
 
 ## Verification
 
-Run from each module:
+Run from `server`:
 
 ```bash
-go build ./...
 go test ./...
 go test -race ./...
 go vet ./...
+go build -o yori-server .
+go mod tidy
 ```
 
 ## Security and limitations

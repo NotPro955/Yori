@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Yori — P2P Secure Chat</title>
+  <link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+  <!-- Login / Username Setup Modal -->
+  <div id="login-modal" class="modal-overlay">
+    <div class="modal-box">
+      <h2>Yori Secure Chat</h2>
+      <p style="color: var(--text-secondary); font-size: 13px;">
+        Zero-knowledge P2P messaging with in-browser multi-hop onion routing and end-to-end encryption.
+      </p>
+      <form id="login-form">
+        <input type="text" id="username-input" placeholder="Enter username (e.g. alice)" required autocomplete="off" minlength="3" maxlength="32">
+        <button type="submit" class="primary" style="margin-top: 12px; width: 100%; padding: 10px;">Connect</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Main App Header -->
+  <header>
+    <div class="brand">YORI</div>
+    <div class="header-status">
+      <div id="conn-status" class="status-badge">🔴 Disconnected</div>
+      <div id="self-username" style="font-weight: bold;"></div>
+      <div id="self-fingerprint" class="fingerprint-badge">🔑 ...</div>
+    </div>
+  </header>
+
+  <!-- Content Split: Sidebar + Chat -->
+  <div class="main-container">
+    <aside>
+      <div class="sidebar-header">
+        <span>Online Peers</span>
+      </div>
+      <ul id="peer-list" class="peer-list">
+        <!-- Populated dynamically -->
+      </ul>
+    </aside>
+
+    <main>
+      <div class="chat-header">
+        <span id="chat-header-name" style="font-weight: bold;">Select a peer to chat</span>
+      </div>
+
+      <div id="circuit-display" class="circuit-bar" style="display: none;">
+        <span>Circuit: <span id="circuit-path" class="circuit-path"></span></span>
+        <span id="circuit-id"></span>
+      </div>
+
+      <div id="messages-pane" class="messages-pane">
+        <!-- Messages populate here -->
+      </div>
+
+      <form id="message-form" class="chat-form">
+        <input type="text" id="message-input" placeholder="Type a message or /trustkey <user>..." autocomplete="off">
+        <button type="submit" class="primary">Send</button>
+      </form>
+    </main>
+  </div>
+
+  <!-- Collapsible Security / Event Log Drawer -->
+  <div id="security-drawer" class="security-drawer">
+    <div id="drawer-toggle" class="drawer-header">
+      <span>Security & Routing Log</span>
+      <span>[Toggle ▼]</span>
+    </div>
+    <div id="drawer-content" class="drawer-content">
+      <!-- Live logs prepend here -->
+    </div>
+  </div>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>
