@@ -169,11 +169,10 @@ func ensureIdentityKey(state *clientState) (ed25519.PrivateKey, error) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if len(state.identityKey) == 0 {
-		publicKey, privateKey, err := ed25519.GenerateKey(crand.Reader)
+		_, privateKey, err := ed25519.GenerateKey(crand.Reader)
 		if err != nil {
 			return nil, err
 		}
-		_ = publicKey
 		state.identityKey = privateKey
 	}
 	return append(ed25519.PrivateKey(nil), state.identityKey...), nil
@@ -205,4 +204,107 @@ func identityFingerprint(identity string) (string, error) {
 	sum := sha256.Sum256(key)
 	encoded := base64.RawStdEncoding.EncodeToString(sum[:])
 	return encoded[:16], nil
+}
+
+func pad256(data []byte) []byte {
+	target := 256
+	for target <= len(data) {
+		target += 256
+	}
+	padded := make([]byte, target)
+	copy(padded, data)
+	padded[len(data)] = 0x80
+	return padded
+}
+
+func unpad256(data []byte) ([]byte, error) {
+	if len(data) == 0 || len(data)%256 != 0 {
+		return nil, fmt.Errorf("invalid padded size")
+	}
+	for i := len(data) - 1; i >= 0; i-- {
+		if data[i] == 0x80 {
+			return data[:i], nil
+		}
+		if data[i] != 0x00 {
+			break
+		}
+	}
+	return nil, fmt.Errorf("invalid padding")
+}
+
+// ensurePreSessionKey generates or returns the client's X25519 pre-session key.
+// This key is used for sealed-sender session_offer encryption so the server
+// never sees the packet type in the outer delivery envelope.
+func ensurePreSessionKey(state *clientState) (*ecdh.PrivateKey, error) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.preSessionKey == nil {
+		key, err := ecdh.X25519().GenerateKey(crand.Reader)
+		if err != nil {
+			return nil, err
+		}
+		state.preSessionKey = key
+	}
+	return state.preSessionKey, nil
+}
+
+// derivePreSessionKey derives a 32-byte AES key from an ephemeral X25519
+// shared secret using HKDF-SHA256 with the domain separator "yori-presession-v1".
+func derivePreSessionKey(sharedSecret []byte) ([]byte, error) {
+	return hkdf.Key(sha256.New, sharedSecret, nil, "yori-presession-v1", 32)
+}
+
+// encryptPreSession encrypts plaintext using the recipient's published pre-session
+// X25519 public key (base64-encoded). Returns the base64 ciphertext and the
+// base64 ephemeral public key that must be sent alongside so the recipient can
+// derive the same shared secret.
+func encryptPreSession(recipientPubKeyB64 string, plaintext []byte) (ciphertext string, ephPub string, err error) {
+	recipientKeyBytes, err := base64.RawStdEncoding.DecodeString(recipientPubKeyB64)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid pre-session public key: %w", err)
+	}
+	recipientPub, err := ecdh.X25519().NewPublicKey(recipientKeyBytes)
+	if err != nil {
+		return "", "", fmt.Errorf("parse pre-session public key: %w", err)
+	}
+	ephemeral, err := ecdh.X25519().GenerateKey(crand.Reader)
+	if err != nil {
+		return "", "", err
+	}
+	shared, err := ephemeral.ECDH(recipientPub)
+	if err != nil {
+		return "", "", err
+	}
+	aesKey, err := derivePreSessionKey(shared)
+	if err != nil {
+		return "", "", err
+	}
+	ct, err := encryptBytesAAD(aesKey, plaintext, []byte("yori-presession-v1"))
+	if err != nil {
+		return "", "", err
+	}
+	return ct, base64.RawStdEncoding.EncodeToString(ephemeral.PublicKey().Bytes()), nil
+}
+
+// decryptPreSessionWithKey decrypts a payload produced by encryptPreSession
+// using the provided X25519 private key. The ephPubB64 is the sender's
+// ephemeral public key (from the packet's PublicKey field).
+func decryptPreSessionWithKey(privKey *ecdh.PrivateKey, ephPubB64 string, ciphertextB64 string) ([]byte, error) {
+	ephPubBytes, err := base64.RawStdEncoding.DecodeString(ephPubB64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid ephemeral public key: %w", err)
+	}
+	ephPub, err := ecdh.X25519().NewPublicKey(ephPubBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse ephemeral public key: %w", err)
+	}
+	shared, err := privKey.ECDH(ephPub)
+	if err != nil {
+		return nil, err
+	}
+	aesKey, err := derivePreSessionKey(shared)
+	if err != nil {
+		return nil, err
+	}
+	return decryptBytesAAD(aesKey, ciphertextB64, []byte("yori-presession-v1"))
 }

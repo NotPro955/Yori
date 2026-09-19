@@ -60,16 +60,20 @@ func (s *mockCoordinationServer) handleClient(conn net.Conn) {
 		conn.Close()
 		return
 	}
-	parts := strings.SplitN(strings.TrimSpace(reg), "\t", 4)
+	parts := strings.SplitN(strings.TrimSpace(reg), "\t", 5)
 	if len(parts) < 4 {
 		conn.Close()
 		return
 	}
 	username, addr, relayKey, identity := parts[0], parts[1], parts[2], parts[3]
+	preSession := ""
+	if len(parts) >= 5 {
+		preSession = parts[4]
+	}
 
 	s.mu.Lock()
 	s.conns[username] = conn
-	s.peerRecords[username] = Peer{Username: username, Address: addr, PublicKey: relayKey, Identity: identity}
+	s.peerRecords[username] = Peer{Username: username, Address: addr, PublicKey: relayKey, Identity: identity, PreSessionKey: preSession}
 	s.mu.Unlock()
 
 	s.broadcastUsers()
@@ -171,6 +175,7 @@ func setupTestClientWithIdentity(t *testing.T, username, serverAddr string, exis
 		identities:  make(map[string]string),
 		keyChanged:  make(map[string]bool),
 		peerUpdates: make(chan struct{}, 1),
+		done:        make(chan struct{}),
 	}
 	if len(existingIdentity) > 0 {
 		state.identityKey = append(ed25519.PrivateKey(nil), existingIdentity...)
@@ -190,9 +195,15 @@ func setupTestClientWithIdentity(t *testing.T, username, serverAddr string, exis
 	}
 	identityPublicKey := base64.RawStdEncoding.EncodeToString(identityKey.Public().(ed25519.PublicKey))
 
+	preSessionKey, err := ensurePreSessionKey(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preSessionPublicKey := base64.RawStdEncoding.EncodeToString(preSessionKey.PublicKey().Bytes())
+
 	go read_server(conn, state)
 
-	_, err = fmt.Fprintf(conn, "%s\t%s\t%s\t%s\n", username, peerAddress, relayKey, identityPublicKey)
+	_, err = fmt.Fprintf(conn, "%s\t%s\t%s\t%s\t%s\n", username, peerAddress, relayKey, identityPublicKey, preSessionPublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,6 +325,7 @@ func TestCriticalDemoPathEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	envelopeBytes = pad256(envelopeBytes)
 	ciphertext, err := encryptBytesAAD(sendKey, envelopeBytes, []byte("yori/message/v1|"+sessionID))
 	if err != nil {
 		t.Fatal(err)
@@ -367,6 +379,7 @@ func TestCriticalDemoPathEndToEnd(t *testing.T) {
 		Body:      bobReplyMsg,
 	}
 	bobEnvBytes, _ := json.Marshal(bobEnvelope)
+	bobEnvBytes = pad256(bobEnvBytes)
 	bobCiphertext, err := encryptBytesAAD(bobSendKey, bobEnvBytes, []byte("yori/message/v1|"+bobSessionID))
 	if err != nil {
 		t.Fatal(err)
@@ -510,6 +523,7 @@ func TestReconnectFlow(t *testing.T) {
 		Body:      "Chat works again after reconnect!",
 	}
 	envBytes, _ := json.Marshal(envelope)
+	envBytes = pad256(envBytes)
 	ciphertext, _ := encryptBytesAAD(sendKey, envBytes, []byte("yori/message/v1|"+sessionID))
 
 	err = directSendToUser(stateAlice2, "bob", Packet{Type: "send", To: "bob", Payload: ciphertext})
@@ -638,6 +652,7 @@ func TestTwoClientDirectDeliveryFallback(t *testing.T) {
 		Body:      "Hello directly from Alice!",
 	}
 	envBytes, _ := json.Marshal(envelope)
+	envBytes = pad256(envBytes)
 	ciphertext, _ := encryptBytesAAD(sendKey, envBytes, []byte("yori/message/v1|"+sessionID))
 
 	err = directSendToUser(stateAlice, "bob", Packet{Type: "send", To: "bob", Payload: ciphertext})
@@ -664,6 +679,3 @@ func TestTwoClientDirectDeliveryFallback(t *testing.T) {
 		t.Fatal("Bob did not receive Alice's message in 2-client fallback mode")
 	}
 }
-
-
-

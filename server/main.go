@@ -36,22 +36,40 @@ type Packet struct {
 }
 
 type Peer struct {
-	Username  string `json:"username"`
-	Address   string `json:"address"`
-	PublicKey string `json:"public_key"`
-	Identity  string `json:"identity"`
+	Username      string `json:"username"`
+	Address       string `json:"address"`
+	PublicKey     string `json:"public_key"`
+	Identity      string `json:"identity"`
+	PreSessionKey string `json:"pre_session_key"`
 }
 
 type Server struct {
-	server_addr string
-	listener    net.Listener
-	clients     map[net.Addr]string
-	connections map[string]net.Conn
-	peerAddrs   map[string]string
-	peerKeys    map[string]string
-	identities  map[string]string
-	heartbeats  map[net.Addr]string
-	state_mu    sync.RWMutex
+	server_addr    string
+	listener       net.Listener
+	clients        map[net.Addr]string
+	connections    map[string]net.Conn
+	peerAddrs      map[string]string
+	peerKeys       map[string]string
+	identities     map[string]string
+	preSessionKeys map[string]string
+	heartbeats     map[net.Addr]string
+	state_mu       sync.RWMutex
+
+	logMu   sync.Mutex
+	logBuf  []string
+	logSubs []chan string
+}
+
+func (ser *Server) writeLog(msg string) {
+	ser.logMu.Lock()
+	ser.logBuf = append(ser.logBuf, msg)
+	for _, sub := range ser.logSubs {
+		select {
+		case sub <- msg:
+		default:
+		}
+	}
+	ser.logMu.Unlock()
 }
 
 func NewServer(server_addr string) {
@@ -61,14 +79,15 @@ func NewServer(server_addr string) {
 	}
 
 	ser := &Server{
-		server_addr: server_addr,
-		listener:    ln,
-		clients:     make(map[net.Addr]string),
-		connections: make(map[string]net.Conn),
-		peerAddrs:   make(map[string]string),
-		peerKeys:    make(map[string]string),
-		identities:  make(map[string]string),
-		heartbeats:  make(map[net.Addr]string),
+		server_addr:    server_addr,
+		listener:       ln,
+		clients:        make(map[net.Addr]string),
+		connections:    make(map[string]net.Conn),
+		peerAddrs:      make(map[string]string),
+		peerKeys:       make(map[string]string),
+		identities:     make(map[string]string),
+		preSessionKeys: make(map[string]string),
+		heartbeats:     make(map[net.Addr]string),
 	}
 	go heartbeat(ser)
 	go server_cli(ser)
@@ -97,7 +116,7 @@ func client_msg(ser *Server, client net.Conn) {
 		client.Close()
 		return
 	}
-	parts := strings.SplitN(strings.TrimSpace(registration), "\t", 4)
+	parts := strings.SplitN(strings.TrimSpace(registration), "\t", 5)
 	username := parts[0]
 	if !validUsername(username) {
 		_ = write_packet(client, Packet{Type: "error", Payload: "invalid username"})
@@ -106,16 +125,18 @@ func client_msg(ser *Server, client net.Conn) {
 	}
 	peerAddr := ""
 	peerKey := ""
-	if len(parts) == 2 {
+	if len(parts) >= 2 {
 		peerAddr = parts[1]
-	} else if len(parts) == 3 {
-		peerAddr = parts[1]
+	}
+	if len(parts) >= 3 {
 		peerKey = parts[2]
-	} else if len(parts) == 4 {
-		peerAddr = parts[1]
-		peerKey = parts[2]
+	}
+	if len(parts) >= 4 {
 		ser.state_mu.Lock()
 		ser.identities[username] = parts[3]
+		if len(parts) >= 5 {
+			ser.preSessionKeys[username] = parts[4]
+		}
 		ser.state_mu.Unlock()
 	}
 	ser.state_mu.Lock()
@@ -130,7 +151,7 @@ func client_msg(ser *Server, client net.Conn) {
 	ser.peerAddrs[username] = peerAddr
 	ser.peerKeys[username] = peerKey
 	ser.state_mu.Unlock()
-	println("[server] user registered:", username)
+	ser.writeLog("[server] user registered: " + username)
 	ser.broadcast_users()
 	defer func() {
 		ser.state_mu.Lock()
@@ -139,8 +160,9 @@ func client_msg(ser *Server, client net.Conn) {
 		delete(ser.peerAddrs, username)
 		delete(ser.peerKeys, username)
 		delete(ser.identities, username)
+		delete(ser.preSessionKeys, username)
 		ser.state_mu.Unlock()
-		println("[server] client disconnected:", username)
+		ser.writeLog("[server] client disconnected: " + username)
 		ser.broadcast_users()
 	}()
 
@@ -157,13 +179,12 @@ func client_msg(ser *Server, client net.Conn) {
 
 		var packet Packet
 		if err := json.Unmarshal([]byte(line), &packet); err != nil {
-			println("[server] invalid packet")
+			ser.writeLog("[server] invalid packet from " + username)
 			continue
 		}
 		if err := validatePacket(packet); err != nil {
 			continue
 		}
-		println("[server] packet received from", username, "type", packet.Type)
 		switch packet.Type {
 		case "users":
 			write_packet(client, Packet{Type: "users", Users: ser.user_list(username)})
@@ -194,6 +215,7 @@ func (ser *Server) deliver(sender net.Conn, current string, packet Packet) {
 	if deliveryType == "send" {
 		deliveryType = "message"
 	}
+	ser.writeLog("[server] packet forwarded to " + packet.To)
 	if err := write_packet(peerConn, Packet{Type: deliveryType, Payload: packet.Payload, PublicKey: packet.PublicKey}); err != nil {
 		write_packet(sender, Packet{Type: "error", Payload: "delivery failed"})
 	}
@@ -205,7 +227,7 @@ func (ser *Server) user_list(exclude string) []Peer {
 	users := make([]Peer, 0, len(ser.clients))
 	for _, username := range ser.clients {
 		if username != "unknown" && username != exclude && ser.peerAddrs[username] != "" && ser.peerKeys[username] != "" {
-			users = append(users, Peer{Username: username, Address: ser.peerAddrs[username], PublicKey: ser.peerKeys[username], Identity: ser.identities[username]})
+			users = append(users, Peer{Username: username, Address: ser.peerAddrs[username], PublicKey: ser.peerKeys[username], Identity: ser.identities[username], PreSessionKey: ser.preSessionKeys[username]})
 		}
 	}
 	secureShuffle(users)
@@ -239,7 +261,6 @@ func write_packet(client net.Conn, packet Packet) error {
 	serverWriteMu.Lock()
 	defer serverWriteMu.Unlock()
 	_ = client.SetWriteDeadline(time.Now().Add(15 * time.Second))
-	println("[server] packet sent type", packet.Type)
 	_, err = client.Write(append(data, '\n'))
 	return err
 }

@@ -45,6 +45,7 @@ func main() {
 		identities:  make(map[string]string),
 		keyChanged:  make(map[string]bool),
 		peerUpdates: make(chan struct{}, 1),
+		done:        make(chan struct{}),
 	}
 
 	fmt.Print("Username: ")
@@ -74,10 +75,18 @@ func main() {
 		log.Fatal("identity key:", err)
 	}
 	identityPublicKey := base64.RawStdEncoding.EncodeToString(identityKey.Public().(ed25519.PublicKey))
+	
+	preSessionKey, err := ensurePreSessionKey(state)
+	if err != nil {
+		log.Fatal("pre-session key:", err)
+	}
+	preSessionPublicKey := base64.RawStdEncoding.EncodeToString(preSessionKey.PublicKey().Bytes())
+	
 	go read_server(server, state)
 	go startHeartbeat(heartbeatAddr, username)
+	go startGlobalCoverTraffic(state)
 
-	if _, err := fmt.Fprintf(server, "%s\t%s\t%s\t%s\n", username, peerAddress, relayKey, identityPublicKey); err != nil {
+	if _, err := fmt.Fprintf(server, "%s\t%s\t%s\t%s\t%s\n", username, peerAddress, relayKey, identityPublicKey, preSessionPublicKey); err != nil {
 		log.Fatal(err)
 	}
 	if err := send_packet(server, Packet{Type: "users"}); err != nil {
@@ -96,6 +105,7 @@ func main() {
 		switch {
 		case cmd == "/quit":
 			clearAllSessions(state)
+			close(state.done)
 			fmt.Fprintln(server, "quit")
 			return
 		case cmd == "/users":
@@ -110,6 +120,16 @@ func main() {
 		case strings.HasPrefix(cmd, "/session "):
 			if !startSession(cmd, server, state, username) {
 				return
+			}
+		case strings.HasPrefix(cmd, "/trustkey "):
+			parts := strings.SplitN(cmd, " ", 2)
+			if len(parts) == 2 {
+				target := strings.TrimSpace(parts[1])
+				state.mu.Lock()
+				delete(state.keyChanged, target)
+				delete(state.identities, target)
+				state.mu.Unlock()
+				fmt.Printf("[identity] cleared cached key for %s — next session offer will be accepted\n", target)
 			}
 		case strings.HasPrefix(cmd, "/chat "):
 			if !startChat(cmd, terminal, server, state, username) {
@@ -188,7 +208,28 @@ func startSession(cmd string, server net.Conn, state *clientState, username stri
 		return true
 	}
 	publicKey := base64.RawStdEncoding.EncodeToString(privateKey.PublicKey().Bytes())
-	if err := directSendToUser(state, parts[1], Packet{Type: "session_offer", To: parts[1], Payload: encryptedKey, PublicKey: publicKey}); err != nil {
+	
+	innerPacket := Packet{Type: "session_offer", To: parts[1], Payload: encryptedKey, PublicKey: publicKey}
+	innerBytes, err := json.Marshal(innerPacket)
+	if err != nil {
+		fmt.Println("inner packet marshal error:", err)
+		return true
+	}
+	state.mu.RLock()
+	peerPreSession := state.peers[parts[1]].PreSessionKey
+	state.mu.RUnlock()
+	if peerPreSession == "" {
+		fmt.Println("peer pre-session key unavailable")
+		return true
+	}
+	paddedBytes := pad256(innerBytes)
+	ciphertext, ephPub, err := encryptPreSession(peerPreSession, paddedBytes)
+	if err != nil {
+		fmt.Println("pre-session encryption error:", err)
+		return true
+	}
+
+	if err := directSendToUser(state, parts[1], Packet{Type: "deliver", To: parts[1], Payload: ciphertext, PublicKey: ephPub}); err != nil {
 		log.Println("session direct send error:", err)
 		return true
 	}
@@ -203,13 +244,13 @@ func startChat(cmd string, terminal *bufio.Reader, server net.Conn, state *clien
 		return true
 	}
 	state.mu.RLock()
-	key, ok := state.outgoing[parts[1]]
+	_, ok := state.outgoing[parts[1]]
 	state.mu.RUnlock()
 	if !ok {
 		fmt.Println("no session key for", parts[1], "- use /session <user> <public-key>")
 		return true
 	}
-	return chat_session(terminal, server, state, username, parts[1], key)
+	return chat_session(terminal, server, state, username, parts[1])
 }
 
 func showFingerprint(command string, state *clientState) {

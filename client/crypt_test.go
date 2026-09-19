@@ -118,6 +118,7 @@ func TestReplayCounterRejection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	bytes = pad256(bytes)
 	ciphertext, err := encryptBytesAAD(key, bytes, []byte("yori/message/v1|"+sessionID))
 	if err != nil {
 		t.Fatal(err)
@@ -159,6 +160,7 @@ func TestWrongSessionRejection(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Encrypted under sessionA's AAD
+	bytes = pad256(bytes)
 	ciphertext, err := encryptBytesAAD(key, bytes, []byte("yori/message/v1|"+sessionA))
 	if err != nil {
 		t.Fatal(err)

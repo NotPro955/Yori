@@ -28,6 +28,9 @@ type Packet struct {
 	TTL          uint8  `json:"ttl,omitempty"`
 	Type         string `json:"type"`
 	To           string `json:"to,omitempty"`
+	From         string `json:"from,omitempty"`
+	IsCover      bool   `json:"is_cover,omitempty"`
+	Body         string `json:"body,omitempty"`
 	Payload      string `json:"payload,omitempty"`
 	PublicKey    string `json:"public_key,omitempty"`
 	OriginalType string `json:"original_type,omitempty"`
@@ -35,10 +38,11 @@ type Packet struct {
 }
 
 type Peer struct {
-	Username  string `json:"username"`
-	Address   string `json:"address"`
-	PublicKey string `json:"public_key"`
-	Identity  string `json:"identity"`
+	Username      string `json:"username"`
+	Address       string `json:"address"`
+	PublicKey     string `json:"public_key"`
+	Identity      string `json:"identity"`
+	PreSessionKey string `json:"pre_session_key"`
 }
 
 type onionEnvelope struct {
@@ -47,8 +51,8 @@ type onionEnvelope struct {
 	TTL       uint8  `json:"ttl"`
 	Next      string `json:"next"`
 	To        string `json:"to,omitempty"`
-	Type      string `json:"type"`
-	Payload   string `json:"payload"`
+	Type      string `json:"type,omitempty"`
+	Payload   string `json:"payload,omitempty"`
 	PublicKey string `json:"public_key,omitempty"`
 }
 
@@ -64,6 +68,9 @@ type chatEnvelope struct {
 	Counter   uint64 `json:"counter"`
 	Sender    string `json:"sender"`
 	Body      string `json:"body"`
+	// Cover marks this as a cover-traffic message. Only visible after E2E
+	// decryption; the server cannot distinguish cover from real traffic.
+	Cover bool `json:"cover,omitempty"`
 }
 
 type sessionEnvelope struct {
@@ -74,23 +81,25 @@ type sessionEnvelope struct {
 }
 
 type clientState struct {
-	mu          sync.RWMutex
-	username    string
-	privateKey  *ecdh.PrivateKey
-	relayKey    *ecdh.PrivateKey
-	identityKey ed25519.PrivateKey
-	serverAddr  string
-	serverConn  net.Conn
-	keys        map[string][]byte
-	outgoing    map[string][]byte
-	shared      map[string][]byte
-	sessionIDs  map[string]string
-	sendCounts  map[string]uint64
-	received    map[string]map[uint64]bool
-	peers       map[string]Peer
-	identities  map[string]string
-	keyChanged  map[string]bool
-	peerUpdates chan struct{}
+	mu            sync.RWMutex
+	username      string
+	privateKey    *ecdh.PrivateKey
+	relayKey      *ecdh.PrivateKey
+	identityKey   ed25519.PrivateKey
+	preSessionKey *ecdh.PrivateKey
+	serverAddr    string
+	serverConn    net.Conn
+	keys          map[string][]byte
+	outgoing      map[string][]byte
+	shared        map[string][]byte
+	sessionIDs    map[string]string
+	sendCounts    map[string]uint64
+	received      map[string]map[uint64]bool
+	peers         map[string]Peer
+	identities    map[string]string
+	keyChanged    map[string]bool
+	peerUpdates   chan struct{}
+	done          chan struct{}
 }
 
 func send_packet(server net.Conn, packet Packet) error {
@@ -148,7 +157,7 @@ func validatePacket(packet Packet) error {
 
 func validPacketType(packetType string) bool {
 	switch packetType {
-	case "users", "waiting", "message", "session_offer", "session_reply", "onion", "deliver", "heartbeat", "error":
+	case "users", "waiting", "message", "session_offer", "session_reply", "session_reject", "onion", "deliver", "send", "relay", "cover", "heartbeat", "error":
 		return true
 	default:
 		return false

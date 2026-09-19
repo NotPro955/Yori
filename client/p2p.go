@@ -94,6 +94,17 @@ func handlePeerConnection(conn net.Conn, state *clientState, server net.Conn) {
 }
 
 func directSendToUser(state *clientState, username string, packet Packet) error {
+	return directSendToUserInner(state, username, packet, false)
+}
+
+// directSendToUserSilent is like directSendToUser but suppresses the
+// "Circuit established" log. Used by global cover traffic so the terminal
+// isn't flooded with circuit announcements for dummy packets.
+func directSendToUserSilent(state *clientState, username string, packet Packet) error {
+	return directSendToUserInner(state, username, packet, true)
+}
+
+func directSendToUserInner(state *clientState, username string, packet Packet, silent bool) error {
 	for attempt := 0; attempt < 2; attempt++ {
 		state.mu.RLock()
 		peers := make(map[string]Peer, len(state.peers))
@@ -108,16 +119,18 @@ func directSendToUser(state *clientState, username string, packet Packet) error 
 			if err != nil {
 				return err
 			}
-			hopNames := make([]string, len(route))
-			for i, p := range route {
-				hopNames[i] = p.Username
+			if !silent {
+				hopNames := make([]string, len(route))
+				for i, p := range route {
+					hopNames[i] = p.Username
+				}
+				shortID := circuitID
+				if len(shortID) > 8 {
+					shortID = shortID[:8]
+				}
+				fmt.Printf("Circuit established\nRoute: %s → %s → %s\nCircuit ID: %s\n",
+					state.username, strings.Join(hopNames, " → "), username, shortID)
 			}
-			shortID := circuitID
-			if len(shortID) > 8 {
-				shortID = shortID[:8]
-			}
-			fmt.Printf("Circuit established\nRoute: %s → %s → %s\nCircuit ID: %s\n",
-				state.username, strings.Join(hopNames, " → "), username, shortID)
 			return directSend(route[0].Address, state.username, Packet{Type: "onion", Payload: onion})
 		}
 		if attempt == 0 {
