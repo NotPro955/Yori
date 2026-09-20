@@ -1,31 +1,28 @@
 # Yori
 
-Yori is a browser-based, security-focused chat prototype deployed as a public Render service. The Go server serves the web application and provides coordination, presence, and opaque packet delivery.
+Yori is a browser-based, security-focused chat prototype. The Go server serves the web application and provides coordination, presence, and opaque packet delivery.
 
 ## Use Yori
 
-1. Open `https://<your-yori-service>.onrender.com`.
-2. Enter a username.
-3. Select an online peer and connect.
-4. Use Yori normally.
+1. Start the server.
+2. Open its address in a browser.
+3. Enter a username.
+4. Select an online peer and connect.
+5. Use Yori normally.
 
-The browser derives its WebSocket endpoint from the page URL. A Render page therefore connects to `wss://<your-yori-service>.onrender.com/ws` automatically; users never need to enter an address.
+The browser derives its WebSocket endpoint from the page URL, so it uses `ws://` during local HTTP development and `wss://` when served over HTTPS.
 
-## Deploy on Render
-
-Render supplies the `PORT` environment variable. The server listens on `0.0.0.0:$PORT`; no additional server address configuration is required. When Render provides `RENDER_EXTERNAL_HOSTNAME`, the server prints its public URL during startup.
-
-Build the server from the `server` directory:
+## Run locally
 
 ```bash
-go build -o yori-server .
+go run .
 ```
 
-Start command:
+## Exchange session keys externally
 
-```bash
-./yori-server
-```
+The server receives only usernames and opaque delivery packets; it never receives or lists browser session public keys. Each user must use **Share session key** to transmit their key through a trusted external channel, then use **Set Key** beside the corresponding online user to paste it locally.
+
+Yori uses that externally exchanged key only to encrypt the session offer. The two clients then exchange fresh session public keys within the encrypted offer/reply and derive their chat keys locally. Relay public keys are separate, ephemeral routing keys advertised by the server as part of peer discovery. When two relay peers are available, messages use a multi-hop route; otherwise the server relays the same end-to-end encrypted envelope directly without receiving plaintext or session keys.
 
 ## Verification
 

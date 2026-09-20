@@ -43,10 +43,9 @@ func TestWebSocketRegistrationAndDelivery(t *testing.T) {
 
 	// Alice registers
 	regAlice := wsRegisterPayload{
-		Type:          "register",
-		Username:      "alice",
-		PreSessionPub: "alicePrePub123",
-		Identity:      "aliceIdent123",
+		Type:           "register",
+		Username:       "alice",
+		RelayPublicKey: "relay-public-key-alice",
 	}
 	if err := wsAlice.WriteJSON(regAlice); err != nil {
 		t.Fatalf("alice failed to send registration: %v", err)
@@ -69,10 +68,8 @@ func TestWebSocketRegistrationAndDelivery(t *testing.T) {
 	defer wsBob.Close()
 
 	regBob := wsRegisterPayload{
-		Type:          "register",
-		Username:      "bob",
-		PreSessionPub: "bobPrePub456",
-		Identity:      "bobIdent456",
+		Type:     "register",
+		Username: "bob",
 	}
 	if err := wsBob.WriteJSON(regBob); err != nil {
 		t.Fatalf("bob failed to send registration: %v", err)
@@ -87,16 +84,17 @@ func TestWebSocketRegistrationAndDelivery(t *testing.T) {
 		t.Fatalf("expected users packet, got %s", pktBob.Type)
 	}
 
-	// Check that Bob received Alice's presession_pub
+	// The server distributes only Alice's relay public key. Her identity and
+	// externally exchanged pre-session key must never appear in peer discovery.
 	foundAlice := false
 	for _, u := range pktBob.Users {
-		if u.Username == "alice" && u.PreSessionPub == "alicePrePub123" {
+		if u.Username == "alice" && u.PublicKey == "relay-public-key-alice" && u.PreSessionPub == "" && u.Identity == "" {
 			foundAlice = true
 			break
 		}
 	}
 	if !foundAlice {
-		t.Fatalf("bob users list did not contain alice with presession_pub: %+v", pktBob.Users)
+		t.Fatalf("bob users list did not contain alice without key material: %+v", pktBob.Users)
 	}
 
 	// Alice sends deliver packet to Bob
@@ -145,7 +143,7 @@ func TestWebSocketFourPeerRelayChain(t *testing.T) {
 			t.Fatalf("connect %s: %v", username, err)
 		}
 		t.Cleanup(func() { _ = ws.Close() })
-		if err := ws.WriteJSON(wsRegisterPayload{Type: "register", Username: username, PreSessionPub: username + "-presession"}); err != nil {
+		if err := ws.WriteJSON(wsRegisterPayload{Type: "register", Username: username}); err != nil {
 			t.Fatalf("register %s: %v", username, err)
 		}
 		return ws

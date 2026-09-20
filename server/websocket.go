@@ -33,9 +33,9 @@ var upgrader = websocket.Upgrader{
 }
 
 type wsClientConn struct {
-	ws       *websocket.Conn
-	send     chan []byte
-	done     chan struct{}
+	ws        *websocket.Conn
+	send      chan []byte
+	done      chan struct{}
 	closeOnce sync.Once
 }
 
@@ -85,11 +85,9 @@ func (c *wsClientConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *wsClientConn) SetWriteDeadline(t time.Time) error { return nil }
 
 type wsRegisterPayload struct {
-	Type          string `json:"type"`
-	Username      string `json:"username"`
-	PreSessionPub string `json:"presession_pub"`
-	Identity      string `json:"identity"`
-	PublicKey     string `json:"public_key"`
+	Type           string `json:"type"`
+	Username       string `json:"username"`
+	RelayPublicKey string `json:"relay_public_key"`
 }
 
 func (ser *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -171,33 +169,11 @@ func (ser *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prePub := reg.PreSessionPub
-	if prePub == "" {
-		prePub = reg.PublicKey
-	}
-
-	if ser.preSessionKeys == nil {
-		ser.preSessionKeys = make(map[string]string)
-	}
-	if ser.peerKeys == nil {
-		ser.peerKeys = make(map[string]string)
-	}
-	if ser.peerAddrs == nil {
-		ser.peerAddrs = make(map[string]string)
-	}
-	if ser.identities == nil {
-		ser.identities = make(map[string]string)
-	}
-
 	ser.clients[ws.RemoteAddr()] = username
 	ser.connections[username] = clientConn
-	ser.preSessionKeys[username] = prePub
-	ser.peerKeys[username] = prePub
-	ser.identities[username] = reg.Identity
-	// Browser clients route through the relay and never use peer socket
-	// addresses. Keeping this empty also avoids exposing a client's remote
-	// address in the users response.
-	ser.peerAddrs[username] = ""
+	// Relay keys are public, server-distributed routing material. Never put a
+	// browser's externally exchanged pre-session key in this presence record.
+	ser.peerKeys[username] = reg.RelayPublicKey
 	ser.state_mu.Unlock()
 
 	ser.writeLog("[server] client connected: " + username)

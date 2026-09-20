@@ -9,8 +9,9 @@ export const COVER_INTERVAL_MS = 2000;
 export const ENABLE_COVER_TRAFFIC = true;
 
 export class CoverTrafficManager {
-  constructor(getPeers, selfUsername, sendPacket, logger = () => {}) {
+  constructor(getPeers, getPeerSessionKey, selfUsername, sendPacket, logger = () => {}) {
     this.getPeers = getPeers;
+    this.getPeerSessionKey = getPeerSessionKey;
     this.selfUsername = selfUsername;
     this.sendPacket = sendPacket;
     this.logger = logger;
@@ -31,8 +32,8 @@ export class CoverTrafficManager {
   }
 
   async tick() {
-    const peers = this.getPeers().filter(p => 
-      p.username !== this.selfUsername && (p.presession_pub || p.pre_session_key)
+    const peers = this.getPeers().filter(p =>
+      p.username !== this.selfUsername && this.getPeerSessionKey(p.username)
     );
     if (peers.length === 0) return;
 
@@ -40,7 +41,7 @@ export class CoverTrafficManager {
     const randBuf = new Uint32Array(1);
     crypto.getRandomValues(randBuf);
     const targetPeer = peers[randBuf[0] % peers.length];
-    const targetPub = targetPeer.presession_pub || targetPeer.pre_session_key;
+    const targetPub = this.getPeerSessionKey(targetPeer.username);
 
     try {
       const eph = await generateX25519KeyPair();

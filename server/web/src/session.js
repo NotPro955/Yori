@@ -22,7 +22,9 @@ export class SessionManager {
     // Fingerprint store for TOFU (peerUsername -> { fingerprint, verified: bool })
     this.fingerprints = new Map();
     this.keyChanged = new Set();
+    this.peerPreSessionKeys = new Map();
     this.loadCachedFingerprints();
+    this.loadPeerPreSessionKeys();
   }
 
   loadCachedFingerprints() {
@@ -45,6 +47,37 @@ export class SessionManager {
       }
       localStorage.setItem('yori_fingerprints', JSON.stringify(obj));
     } catch (e) {}
+  }
+
+  loadPeerPreSessionKeys() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem('yori_peer_session_keys') || '{}');
+      for (const [username, key] of Object.entries(parsed)) this.peerPreSessionKeys.set(username, key);
+    } catch (_) {}
+  }
+
+  savePeerPreSessionKeys() {
+    try {
+      localStorage.setItem('yori_peer_session_keys', JSON.stringify(Object.fromEntries(this.peerPreSessionKeys)));
+    } catch (_) {}
+  }
+
+  getPeerPreSessionKey(peerUsername) {
+    return this.peerPreSessionKeys.get(peerUsername) || '';
+  }
+
+  setPeerPreSessionKey(peerUsername, publicKey) {
+    const key = publicKey.trim();
+    try {
+      const base64 = key.replace(/-/g, '+').replace(/_/g, '/');
+      const decoded = Uint8Array.from(atob(base64 + '='.repeat((4 - base64.length % 4) % 4)), c => c.charCodeAt(0));
+      if (decoded.length !== 32) return false;
+    } catch (_) {
+      return false;
+    }
+    this.peerPreSessionKeys.set(peerUsername, key);
+    this.savePeerPreSessionKeys();
+    return true;
   }
 
   trustKey(peerUsername) {
@@ -71,7 +104,7 @@ export class SessionManager {
   // Alice initiates session offer to Bob
   async startSession(targetPeer) {
     const peerUsername = targetPeer.username;
-    const targetPub = targetPeer.presession_pub || targetPeer.pre_session_key;
+    const targetPub = this.getPeerPreSessionKey(peerUsername);
     if (!targetPub) {
       this.logger(`[error] cannot start session with ${peerUsername}: missing pre-session public key`);
       return;
@@ -303,12 +336,13 @@ export class SessionManager {
       aad
     );
 
-    // Onion route delivery
+    // Prefer multi-hop onion routing whenever two relay peers are available.
     const circuit = this.circuitManager.getCircuit(peerUsername);
     if (!circuit || !circuit.route || circuit.route.length < 2) {
-      // Never silently degrade a chat message to direct delivery.
-      session.sendCounter -= 1;
-      throw new Error('not enough peers for onion route');
+      // The server receives only this encrypted envelope; plaintext and
+      // session keys remain in the participating browsers.
+      this.sendPacket(createPacket('deliver', { to: peerUsername, payload: ciphertextB64 }));
+      return { counter, circuit: null };
     }
 
     const { circuitID, targetRelay, onionPayload } = await buildOnionPacket(

@@ -9,7 +9,6 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -264,7 +263,7 @@ func (ser *Server) user_list(exclude string) []Peer {
 	defer ser.state_mu.RUnlock()
 	users := make([]Peer, 0, len(ser.clients))
 	for _, username := range ser.clients {
-		if username != "unknown" && username != exclude && (ser.preSessionKeys[username] != "" || (ser.peerAddrs[username] != "" && ser.peerKeys[username] != "")) {
+		if username != "unknown" && username != exclude {
 			users = append(users, Peer{
 				Username:      username,
 				Address:       ser.peerAddrs[username],
@@ -383,13 +382,5 @@ func validUsername(username string) bool {
 }
 
 func main() {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "9000"
-	}
-	addr := "0.0.0.0:" + port
-	if renderHost := os.Getenv("RENDER_EXTERNAL_HOSTNAME"); renderHost != "" {
-		fmt.Println("Public URL: https://" + renderHost)
-	}
-	NewServer(addr)
+	NewServer(":9000")
 }

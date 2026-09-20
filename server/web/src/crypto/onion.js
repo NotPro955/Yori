@@ -9,7 +9,7 @@ export function randomHex(bytesLen = 8) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Encrypt an onion layer for a target relay's pre-session public key
+// Encrypt an onion layer for a target relay's server-advertised relay key.
 export async function encryptLayer(targetPubB64, envelopeObj) {
   const eph = await generateX25519KeyPair();
   const shared = await deriveSharedSecret(eph.keyPair.privateKey, targetPubB64);
@@ -24,9 +24,9 @@ export async function encryptLayer(targetPubB64, envelopeObj) {
   };
 }
 
-// Decrypt an onion layer using own pre-session private key
-export async function peelLayer(preSessionPrivKey, layerPacket) {
-  const shared = await deriveSharedSecret(preSessionPrivKey, layerPacket.ephemeral);
+// Decrypt an onion layer using this browser's relay private key.
+export async function peelLayer(relayPrivKey, layerPacket) {
+  const shared = await deriveSharedSecret(relayPrivKey, layerPacket.ephemeral);
   const aesKey = await derivePreSessionKey(shared);
   
   const decryptedBytes = await decryptBytesAAD(aesKey, layerPacket.ciphertext, 'yori/onion/v1');
@@ -40,7 +40,7 @@ export async function peelLayer(preSessionPrivKey, layerPacket) {
 }
 
 // Build multi-hop onion packet
-// route: [relay1, relay2] (Peer objects with username, presession_pub)
+// route: [relay1, relay2] (peer objects with username, relay_pub)
 // recipient: username of target
 // innerPayloadB64: already encrypted with session key for recipient
 export async function buildOnionPacket(route, recipient, innerPayloadB64, circuitID = randomHex(8)) {
@@ -54,7 +54,7 @@ export async function buildOnionPacket(route, recipient, innerPayloadB64, circui
   };
   
   // Wrap in relay 2 layer
-  const relay2Packet = await encryptLayer(route[1].presession_pub, currentEnvelope);
+  const relay2Packet = await encryptLayer(route[1].relay_pub, currentEnvelope);
   
   // Wrap in relay 1 layer
   const relay1Envelope = {
@@ -63,7 +63,7 @@ export async function buildOnionPacket(route, recipient, innerPayloadB64, circui
     circuit_id: circuitID,
     ttl: 3
   };
-  const relay1Packet = await encryptLayer(route[0].presession_pub, relay1Envelope);
+  const relay1Packet = await encryptLayer(route[0].relay_pub, relay1Envelope);
   
   return {
     circuitID,

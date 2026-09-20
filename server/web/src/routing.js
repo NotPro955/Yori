@@ -1,11 +1,12 @@
 // Relay route selection and circuit management
 
 export function selectRoute(peers, selfUsername, recipientUsername) {
-  // Candidate relays must not be sender or recipient and must have presession_pub
+  // Relay public keys are advertised by the server with peer presence. They are
+  // distinct from the peer pre-session key used to establish a chat session.
   const candidates = peers.filter(p => 
     p.username !== selfUsername && 
     p.username !== recipientUsername && 
-    (p.presession_pub || p.pre_session_key)
+    p.public_key
   );
 
   if (candidates.length < 2) {
@@ -24,11 +25,11 @@ export function selectRoute(peers, selfUsername, recipientUsername) {
   return [
     {
       username: shuffled[0].username,
-      presession_pub: shuffled[0].presession_pub || shuffled[0].pre_session_key
+      relay_pub: shuffled[0].public_key
     },
     {
       username: shuffled[1].username,
-      presession_pub: shuffled[1].presession_pub || shuffled[1].pre_session_key
+      relay_pub: shuffled[1].public_key
     }
   ];
 }

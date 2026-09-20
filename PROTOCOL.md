@@ -2,7 +2,7 @@
 
 ## Transport
 
-Connections use newline-delimited JSON with a maximum packet size. Client and server apply read/write deadlines. Direct relay connections carry a short registration line followed by one onion packet.
+Browser clients connect to the server over WebSocket. The server coordinates presence and forwards opaque packets; it never terminates a chat session.
 
 ## Packet metadata
 
@@ -12,17 +12,21 @@ Supported server-facing types include `users`, `deliver`, `heartbeat`, `waiting`
 
 ## Discovery
 
-A client registers a username, direct listener address, relay public key, and identity public key. The server returns up to three peer records. Peer addresses are necessary for direct TCP routing and are therefore a documented privacy tradeoff.
+A browser registers a username and an ephemeral relay public key. The server returns online peers and their relay public keys. It never returns identity keys, chat pre-session keys, private keys, or peer addresses.
 
 ## Sessions
 
-Clients generate ephemeral X25519 keys and a random session ID. The ephemeral public key and session ID are signed with an in-memory Ed25519 identity key. Both sides derive the same transport secret with X25519 and HKDF-SHA256, then derive separate directional keys.
+Chat pre-session public keys are exchanged only through a trusted external channel. They are not registered with or returned by the server.
+
+To establish a session, the initiator creates an ephemeral X25519 keypair and random session ID, signs its ephemeral public key and session ID with its Ed25519 identity, then seals that offer to the recipient's externally exchanged pre-session public key. The recipient decrypts it with its matching private pre-session key, verifies the signature, creates its own ephemeral X25519 keypair, and seals a signed reply to the initiator's ephemeral public key.
+
+Both browsers derive the same ephemeral X25519 shared secret and use HKDF-SHA256 to derive distinct directional AES-256-GCM keys. An AES key is never sent over the network, encrypted or otherwise.
 
 The server forwards opaque session packets and never receives the private or derived session keys.
 
 ## Onion routing
 
-The sender selects two to five distinct relays, excluding sender and recipient. Each layer contains only the next hop and an encrypted remainder. The relay decrypts exactly one layer, decrements TTL, applies bounded jitter, and opens a new TCP connection to the next hop. The final relay sends a `deliver` packet to the server, which forwards the opaque payload to the named recipient.
+Relay public keys are a separate key class from chat pre-session keys. The server distributes relay public keys through peer discovery. When at least two relay peers are available, the sender selects two distinct relays, excluding sender and recipient. It encrypts each onion layer to the corresponding relay public key. A relay decrypts exactly one layer with its relay private key and forwards the encrypted remainder. The final relay sends a `deliver` packet to the server, which forwards the opaque payload to the named recipient.
 
 ## Messages
 
