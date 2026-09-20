@@ -46,7 +46,7 @@ class YoriApp {
       selfUsername: $('self-username'), selfAvatar: $('self-avatar'), peerCount: $('peer-count'), peerList: $('peer-list'), noPeers: $('no-peers'), peerFilter: $('peer-filter'), peerSidebar: $('peer-sidebar'),
       mobileSidebarToggle: $('mobile-sidebar-toggle'), sidebarClose: $('sidebar-close'), shareSessionKey: $('share-session-key'),
       emptyChat: $('empty-chat'), chatView: $('chat-view'), chatAvatar: $('chat-avatar'), chatHeaderName: $('chat-header-name'), chatSessionState: $('chat-session-state'), routeLabel: $('route-label'),
-      messagesPane: $('messages-pane'), messageForm: $('message-form'), messageInput: $('message-input'), securityButton: $('security-button'), endSession: $('end-session-button'),
+      messagesPane: $('messages-pane'), messageForm: $('message-form'), messageInput: $('message-input'), securityButton: $('security-button'), clearChat: $('clear-chat-button'), endSession: $('end-session-button'),
       securityDrawer: $('security-drawer'), drawerToggle: $('drawer-toggle'), drawerContent: $('drawer-content'),
       modal: $('handshake-modal'), handshakeLabel: $('handshake-label'), handshakeTitle: $('handshake-title'), handshakeDescription: $('handshake-description'), handshakeStatus: $('handshake-status'), keySetup: $('key-setup'), keyOptions: $('key-options'), ownKeyPanel: $('own-key-panel'), ownKeyOutput: $('own-key-output'), peerKeyPanel: $('peer-key-panel'), peerKeyInput: $('peer-key-input'), generateKey: $('generate-key-button'), inputKey: $('input-key-button'), copyKey: $('copy-key-button'), fingerprintPanel: $('fingerprint-panel'), peerFingerprint: $('peer-fingerprint'), handshakeAction: $('handshake-action'), handshakeCancel: $('handshake-cancel')
     };
@@ -61,6 +61,7 @@ class YoriApp {
     this.dom.mobileSidebarToggle.addEventListener('click', () => this.dom.peerSidebar.classList.add('open'));
     this.dom.sidebarClose.addEventListener('click', () => this.dom.peerSidebar.classList.remove('open'));
     this.dom.securityButton.addEventListener('click', () => this.openSecurity());
+    this.dom.clearChat.addEventListener('click', () => this.clearChat());
     this.dom.endSession.addEventListener('click', () => this.endSession());
     this.dom.handshakeCancel.addEventListener('click', () => this.closeModal());
     this.dom.modal.querySelector('[data-close-modal]').addEventListener('click', () => this.closeModal());
@@ -302,6 +303,13 @@ class YoriApp {
   }
 
   openSecurity() { if (!this.selectedPeer) return; this.openHandshake(this.selectedPeer, 'established'); }
+  clearChat() {
+    if (!this.selectedPeer) return;
+    if (!window.confirm(`Clear the local chat history with ${this.selectedPeer}? This cannot be undone.`)) return;
+    this.messages.delete(this.selectedPeer);
+    this.renderMessages();
+    this.log(`[chat] cleared local chat history with ${this.selectedPeer}`);
+  }
   closeModal() { this.dom.modal.hidden = true; this.handshakePeer = null; this.dom.peerKeyInput.value = ''; }
   endSession() { if (!this.selectedPeer) return; this.sessionManager.sessions.delete(this.selectedPeer); this.log(`[session] closed local session with ${this.selectedPeer}`); this.selectedPeer = null; this.dom.chatView.hidden = true; this.dom.emptyChat.hidden = false; this.renderPeerList(); }
   shareSessionKey() { if (!this.preSession) return; window.prompt('Share this public setup key with a trusted contact outside Yori. Never share private keys or session secrets.', this.preSession.pubB64); }
