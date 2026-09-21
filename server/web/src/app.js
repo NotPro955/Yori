@@ -50,6 +50,10 @@ class YoriApp {
       securityDrawer: $('security-drawer'), drawerToggle: $('drawer-toggle'), drawerContent: $('drawer-content'),
       modal: $('handshake-modal'), handshakeLabel: $('handshake-label'), handshakeTitle: $('handshake-title'), handshakeDescription: $('handshake-description'), handshakeStatus: $('handshake-status'), keySetup: $('key-setup'), keyOptions: $('key-options'), ownKeyPanel: $('own-key-panel'), ownKeyOutput: $('own-key-output'), peerKeyPanel: $('peer-key-panel'), peerKeyInput: $('peer-key-input'), generateKey: $('generate-key-button'), inputKey: $('input-key-button'), copyKey: $('copy-key-button'), fingerprintPanel: $('fingerprint-panel'), peerFingerprint: $('peer-fingerprint'), handshakeAction: $('handshake-action'), handshakeCancel: $('handshake-cancel')
     };
+    this.dom.drawerBackdrop = document.createElement('div');
+    this.dom.drawerBackdrop.className = 'drawer-backdrop';
+    this.dom.drawerBackdrop.hidden = true;
+    document.body.append(this.dom.drawerBackdrop);
     this.dom.loginForm.addEventListener('submit', e => { e.preventDefault(); const handle = this.dom.usernameInput.value.trim(); this.dom.loginError.hidden = true; if (handle.length >= 3) this.login(handle); });
     this.dom.messageForm.addEventListener('submit', e => { e.preventDefault(); this.handleSendMessage(); });
     this.dom.messageInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.handleSendMessage(); } });
@@ -58,8 +62,10 @@ class YoriApp {
     this.dom.drawerToggle.addEventListener('click', () => this.dom.securityDrawer.classList.toggle('collapsed'));
     this.dom.shareSessionKey.addEventListener('click', () => this.shareSessionKey());
     this.dom.leave.addEventListener('click', () => this.leave());
-    this.dom.mobileSidebarToggle.addEventListener('click', () => { this.dom.peerSidebar.classList.add('open'); document.body.classList.add('drawer-open'); });
-    this.dom.sidebarClose.addEventListener('click', () => { this.dom.peerSidebar.classList.remove('open'); document.body.classList.remove('drawer-open'); });
+    this.dom.mobileSidebarToggle.addEventListener('click', () => this.toggleDrawer(true));
+    this.dom.sidebarClose.addEventListener('click', () => this.toggleDrawer(false));
+    this.dom.drawerBackdrop.addEventListener('click', () => this.toggleDrawer(false));
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') { if (!this.dom.modal.hidden) this.closeModal(); else this.toggleDrawer(false); } });
     this.dom.securityButton.addEventListener('click', () => this.openSecurity());
     this.dom.clearChat.addEventListener('click', () => this.clearChat());
     this.dom.endSession.addEventListener('click', () => this.endSession());
@@ -214,7 +220,7 @@ class YoriApp {
   }
 
   selectPeer(peer) {
-    this.selectedPeer = peer; this.dom.peerSidebar.classList.remove('open'); document.body.classList.remove('drawer-open'); this.dom.emptyChat.hidden = true; this.dom.chatView.hidden = false;
+    this.selectedPeer = peer; this.toggleDrawer(false); this.dom.emptyChat.hidden = true; this.dom.chatView.hidden = false;
     this.dom.chatHeaderName.textContent = peer; this.dom.chatAvatar.textContent = initials(peer); this.dom.messageInput.placeholder = `Message ${peer}…`;
     const verified = this.sessionManager.fingerprints.get(peer)?.verified;
     this.dom.chatSessionState.textContent = verified ? 'IDENTITY VERIFIED' : 'IDENTITY UNVERIFIED';
@@ -231,8 +237,11 @@ class YoriApp {
     this.dom.messagesPane.replaceChildren();
     for (const message of this.messages.get(this.selectedPeer) || []) {
       const row = document.createElement('div'); row.className = `message-row ${message.senderType}`;
+      const messageLine = document.createElement('div'); messageLine.className = 'message-line';
+      const avatar = document.createElement('span'); avatar.className = `message-avatar avatar ${message.senderType === 'self' ? 'self' : ''}`; avatar.textContent = initials(message.senderType === 'self' ? this.username : message.sender);
       const meta = document.createElement('div'); meta.className = 'message-meta'; meta.textContent = `${message.senderType === 'self' ? 'YOU' : message.sender.toUpperCase()} · ${message.time}${message.counter ? ` · #${message.counter}` : ''}`;
-      const bubble = document.createElement('div'); bubble.className = 'message-bubble'; bubble.textContent = message.body; row.append(meta, bubble); this.dom.messagesPane.append(row);
+      const bubble = document.createElement('div'); bubble.className = 'message-bubble'; bubble.textContent = message.body;
+      messageLine.append(avatar, bubble); row.append(meta, messageLine); this.dom.messagesPane.append(row);
     }
     this.dom.messagesPane.scrollTop = this.dom.messagesPane.scrollHeight;
   }
@@ -308,6 +317,11 @@ class YoriApp {
   }
 
   openSecurity() { if (!this.selectedPeer) return; this.openHandshake(this.selectedPeer, 'established'); }
+  toggleDrawer(open) {
+    this.dom.peerSidebar.classList.toggle('open', open);
+    this.dom.drawerBackdrop.hidden = !open;
+    document.body.classList.toggle('drawer-open', open);
+  }
   clearChat() {
     if (!this.selectedPeer) return;
     if (!window.confirm(`Clear the local chat history with ${this.selectedPeer}? This cannot be undone.`)) return;
@@ -332,7 +346,7 @@ class YoriApp {
     }
   }
 
-  leave() { this.coverManager?.stop(); this.circuitManager?.stopAll(); this.ws?.disconnect(); this.dom.appShell.hidden = true; this.dom.landing.hidden = false; this.setConnectionStatus('disconnected', 'DISCONNECTED'); this.selectedPeer = null; }
+  leave() { this.coverManager?.stop(); this.circuitManager?.stopAll(); this.ws?.disconnect(); this.toggleDrawer(false); this.closeModal(); this.dom.appShell.hidden = true; this.dom.landing.hidden = false; this.setConnectionStatus('disconnected', 'DISCONNECTED'); this.selectedPeer = null; }
 
   showRegistrationError(message) {
     this.ws?.disconnect();
