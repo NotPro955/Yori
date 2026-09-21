@@ -42,7 +42,7 @@ class YoriApp {
     const $ = id => document.getElementById(id);
     this.dom = {
       landing: $('landing'), appShell: $('app-shell'), loginForm: $('login-form'), usernameInput: $('username-input'),
-      landingConnection: $('landing-connection'), connStatus: $('conn-status'), leave: $('leave-button'),
+      landingConnection: $('landing-connection'), connStatus: $('conn-status'), loginError: $('login-error'), leave: $('leave-button'),
       selfUsername: $('self-username'), selfAvatar: $('self-avatar'), peerCount: $('peer-count'), peerList: $('peer-list'), noPeers: $('no-peers'), peerFilter: $('peer-filter'), peerSidebar: $('peer-sidebar'),
       mobileSidebarToggle: $('mobile-sidebar-toggle'), sidebarClose: $('sidebar-close'), shareSessionKey: $('share-session-key'),
       emptyChat: $('empty-chat'), chatView: $('chat-view'), chatAvatar: $('chat-avatar'), chatHeaderName: $('chat-header-name'), chatSessionState: $('chat-session-state'), routeLabel: $('route-label'),
@@ -50,7 +50,7 @@ class YoriApp {
       securityDrawer: $('security-drawer'), drawerToggle: $('drawer-toggle'), drawerContent: $('drawer-content'),
       modal: $('handshake-modal'), handshakeLabel: $('handshake-label'), handshakeTitle: $('handshake-title'), handshakeDescription: $('handshake-description'), handshakeStatus: $('handshake-status'), keySetup: $('key-setup'), keyOptions: $('key-options'), ownKeyPanel: $('own-key-panel'), ownKeyOutput: $('own-key-output'), peerKeyPanel: $('peer-key-panel'), peerKeyInput: $('peer-key-input'), generateKey: $('generate-key-button'), inputKey: $('input-key-button'), copyKey: $('copy-key-button'), fingerprintPanel: $('fingerprint-panel'), peerFingerprint: $('peer-fingerprint'), handshakeAction: $('handshake-action'), handshakeCancel: $('handshake-cancel')
     };
-    this.dom.loginForm.addEventListener('submit', e => { e.preventDefault(); const handle = this.dom.usernameInput.value.trim(); if (handle.length >= 3) this.login(handle); });
+    this.dom.loginForm.addEventListener('submit', e => { e.preventDefault(); const handle = this.dom.usernameInput.value.trim(); this.dom.loginError.hidden = true; if (handle.length >= 3) this.login(handle); });
     this.dom.messageForm.addEventListener('submit', e => { e.preventDefault(); this.handleSendMessage(); });
     this.dom.messageInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.handleSendMessage(); } });
     this.dom.messageInput.addEventListener('input', () => { this.dom.messageInput.style.height = 'auto'; this.dom.messageInput.style.height = `${Math.min(this.dom.messageInput.scrollHeight, 130)}px`; });
@@ -58,8 +58,8 @@ class YoriApp {
     this.dom.drawerToggle.addEventListener('click', () => this.dom.securityDrawer.classList.toggle('collapsed'));
     this.dom.shareSessionKey.addEventListener('click', () => this.shareSessionKey());
     this.dom.leave.addEventListener('click', () => this.leave());
-    this.dom.mobileSidebarToggle.addEventListener('click', () => this.dom.peerSidebar.classList.add('open'));
-    this.dom.sidebarClose.addEventListener('click', () => this.dom.peerSidebar.classList.remove('open'));
+    this.dom.mobileSidebarToggle.addEventListener('click', () => { this.dom.peerSidebar.classList.add('open'); document.body.classList.add('drawer-open'); });
+    this.dom.sidebarClose.addEventListener('click', () => { this.dom.peerSidebar.classList.remove('open'); document.body.classList.remove('drawer-open'); });
     this.dom.securityButton.addEventListener('click', () => this.openSecurity());
     this.dom.clearChat.addEventListener('click', () => this.clearChat());
     this.dom.endSession.addEventListener('click', () => this.endSession());
@@ -133,7 +133,12 @@ class YoriApp {
         this.renderPeerList(); this.updateRouteUI(); break;
       case 'deliver': case 'message': case 'onion': this.handleInboundDelivery(packet); break;
       case 'waiting': this.log(`[transport] recipient ${packet.to} is not currently available`, 'warn'); break;
-      case 'error': this.log(`[server] ${packet.payload}`, 'error'); break;
+      case 'error':
+        this.log(`[server] ${packet.payload}`, 'error');
+        if (/username already taken|invalid registration|invalid username/i.test(packet.payload || '')) {
+          this.showRegistrationError(packet.payload);
+        }
+        break;
     }
   }
 
@@ -209,7 +214,7 @@ class YoriApp {
   }
 
   selectPeer(peer) {
-    this.selectedPeer = peer; this.dom.peerSidebar.classList.remove('open'); this.dom.emptyChat.hidden = true; this.dom.chatView.hidden = false;
+    this.selectedPeer = peer; this.dom.peerSidebar.classList.remove('open'); document.body.classList.remove('drawer-open'); this.dom.emptyChat.hidden = true; this.dom.chatView.hidden = false;
     this.dom.chatHeaderName.textContent = peer; this.dom.chatAvatar.textContent = initials(peer); this.dom.messageInput.placeholder = `Message ${peer}…`;
     const verified = this.sessionManager.fingerprints.get(peer)?.verified;
     this.dom.chatSessionState.textContent = verified ? 'IDENTITY VERIFIED' : 'IDENTITY UNVERIFIED';
@@ -241,7 +246,7 @@ class YoriApp {
   openHandshake(peer, mode = 'setup') {
     this.handshakePeer = peer; this.handshakeMode = mode; const hasKey = this.sessionManager.getPeerPreSessionKey(peer);
     const fp = this.sessionManager.fingerprints.get(peer); const changed = this.sessionManager.keyChanged.has(peer);
-    this.dom.modal.hidden = false; this.dom.handshakeLabel.textContent = `HANDSHAKE / ${peer.toUpperCase()}`; this.dom.keySetup.hidden = true; this.dom.fingerprintPanel.hidden = true; this.dom.handshakeStatus.replaceChildren();
+    this.dom.modal.hidden = false; document.body.classList.add('modal-open'); this.dom.handshakeLabel.textContent = `HANDSHAKE / ${peer.toUpperCase()}`; this.dom.keySetup.hidden = true; this.dom.fingerprintPanel.hidden = true; this.dom.handshakeStatus.replaceChildren();
     const statuses = (values) => values.forEach(([left, right, cls = '']) => { const row = document.createElement('div'); const a = document.createElement('span'); a.textContent = left; const b = document.createElement('span'); b.textContent = right; b.className = cls; row.append(a,b); this.dom.handshakeStatus.append(row); });
     if (mode === 'key-change' || changed) {
       this.dom.handshakeTitle.textContent = 'Identity change detected'; this.dom.handshakeDescription.textContent = `The identity associated with ${peer} has changed. Verify the new fingerprint before continuing.`; this.dom.fingerprintPanel.hidden = false; this.dom.peerFingerprint.textContent = formatFingerprint(fp?.fingerprint); statuses([['IDENTITY', 'CHANGED', 'pending'], ['SESSION', 'BLOCKED', 'pending']]); this.dom.handshakeAction.textContent = 'ACCEPT NEW IDENTITY';
@@ -310,7 +315,7 @@ class YoriApp {
     this.renderMessages();
     this.log(`[chat] cleared local chat history with ${this.selectedPeer}`);
   }
-  closeModal() { this.dom.modal.hidden = true; this.handshakePeer = null; this.dom.peerKeyInput.value = ''; }
+  closeModal() { this.dom.modal.hidden = true; document.body.classList.remove('modal-open'); this.handshakePeer = null; this.dom.peerKeyInput.value = ''; }
   endSession() { if (!this.selectedPeer) return; this.sessionManager.sessions.delete(this.selectedPeer); this.log(`[session] closed local session with ${this.selectedPeer}`); this.selectedPeer = null; this.dom.chatView.hidden = true; this.dom.emptyChat.hidden = false; this.renderPeerList(); }
   shareSessionKey() { if (!this.preSession) return; window.prompt('Share this public setup key with a trusted contact outside Yori. Never share private keys or session secrets.', this.preSession.pubB64); }
 
@@ -328,6 +333,16 @@ class YoriApp {
   }
 
   leave() { this.coverManager?.stop(); this.circuitManager?.stopAll(); this.ws?.disconnect(); this.dom.appShell.hidden = true; this.dom.landing.hidden = false; this.setConnectionStatus('disconnected', 'DISCONNECTED'); this.selectedPeer = null; }
+
+  showRegistrationError(message) {
+    this.ws?.disconnect();
+    this.dom.appShell.hidden = true;
+    this.dom.landing.hidden = false;
+    this.setConnectionStatus('disconnected', 'DISCONNECTED');
+    this.dom.loginError.textContent = message || 'Unable to register this username.';
+    this.dom.loginError.hidden = false;
+    this.dom.usernameInput.focus();
+  }
 }
 
 window.addEventListener('DOMContentLoaded', () => {

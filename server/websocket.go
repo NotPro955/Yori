@@ -19,8 +19,12 @@ var webAssets embed.FS
 
 const (
 	writeWait      = 10 * time.Second
-	pongWait       = 10 * time.Second
-	pingPeriod     = 30 * time.Second
+	// Browsers can pause JavaScript and delay control-frame processing when a
+	// tab is backgrounded or a phone enters a power-saving state. Keep the
+	// heartbeat frequent enough for proxies while allowing a generous pong
+	// window so an idle client is not mistaken for a dead one.
+	pongWait       = 60 * time.Second
+	pingPeriod     = 45 * time.Second
 	maxMessageSize = maxPacketBytes
 )
 
@@ -201,6 +205,7 @@ func (ser *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	for {
 		_, message, err := ws.ReadMessage()
 		if err != nil {
+			ser.writeLog("[server] websocket closed for " + username + ": " + err.Error())
 			break
 		}
 		var packet Packet

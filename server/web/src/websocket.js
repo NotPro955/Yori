@@ -16,7 +16,15 @@ export class WebSocketManager {
   connect() {
     this.isExplicitClose = false;
     if (this.ws) {
-      try { this.ws.close(); } catch (e) {}
+      const previous = this.ws;
+      this.ws = null;
+      // A superseded socket must not schedule a reconnect when its close
+      // event arrives after the replacement socket has been created.
+      previous.onopen = null;
+      previous.onmessage = null;
+      previous.onerror = null;
+      previous.onclose = null;
+      try { previous.close(); } catch (e) {}
     }
 
     this.onStatusChange('reconnecting', 'Connecting...');
@@ -28,12 +36,16 @@ export class WebSocketManager {
       return;
     }
 
-    this.ws.onopen = () => {
+    const socket = this.ws;
+
+    socket.onopen = () => {
+      if (this.ws !== socket) return;
       this.reconnectAttempts = 0;
       this.onStatusChange('connected', 'Connected');
     };
 
-    this.ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (this.ws !== socket) return;
       try {
         const packet = JSON.parse(event.data);
         this.onMessage(packet);
@@ -42,14 +54,17 @@ export class WebSocketManager {
       }
     };
 
-    this.ws.onclose = () => {
+    socket.onclose = () => {
+      if (this.ws !== socket) return;
+      this.ws = null;
       if (!this.isExplicitClose) {
         this.onStatusChange('disconnected', 'Disconnected');
         this.scheduleReconnect();
       }
     };
 
-    this.ws.onerror = () => {
+    socket.onerror = () => {
+      if (this.ws !== socket) return;
       // triggers onclose
     };
   }
@@ -83,8 +98,13 @@ export class WebSocketManager {
       this.reconnectTimer = null;
     }
     if (this.ws) {
-      this.ws.close();
+      const socket = this.ws;
       this.ws = null;
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
+      socket.close();
     }
     this.onStatusChange('disconnected', 'Disconnected');
   }

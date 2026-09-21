@@ -10,31 +10,7 @@ import (
 func server_cli(ser *Server) {
 	reader := bufio.NewScanner(os.Stdin)
 	fmt.Println("Server CLI: users | heartbeat | logs | help | quit")
-	for {
-		fmt.Print("server> ")
-		if !reader.Scan() {
-			break
-		}
-		switch strings.TrimSpace(reader.Text()) {
-		case "users":
-			ser.print_users()
-		case "heartbeat":
-			ser.print_heartbeats()
-		case "logs":
-			ser.streamLogs(reader)
-		case "help":
-			fmt.Println("users      list connected clients")
-			fmt.Println("heartbeat  list active heartbeat clients")
-			fmt.Println("logs       view server logs live (type 'q' to exit)")
-			fmt.Println("quit       stop the server")
-		case "quit":
-			fmt.Println("stopping server")
-			os.Exit(0)
-		case "":
-		default:
-			fmt.Println("unknown command; use help")
-		}
-	}
+	ser.streamLogs(reader)
 	if err := reader.Err(); err != nil {
 		fmt.Println("server CLI stopped:", err)
 	}
