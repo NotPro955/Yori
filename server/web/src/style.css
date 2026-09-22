@@ -220,6 +220,7 @@ button,input,textarea { font:inherit; } button { cursor:pointer; } [hidden] { di
 .camera-panel .button { margin-top:9px; }
 .camera-panel p { margin:8px 0 0; color:#aebdca; font-size:12px; line-height:1.4; }
 .modal-box { overflow-y:auto; -webkit-overflow-scrolling:touch; touch-action:pan-y; }
+.modal-overlay { z-index:40; }
 
 /* Keep textual connection states, remove circular status markers. */
 .online-dot,

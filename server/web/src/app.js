@@ -347,6 +347,7 @@ class YoriApp {
   }
 
   openHandshake(peer, mode = 'setup') {
+    this.toggleDrawer(false);
     this.handshakePeer = peer; this.handshakeMode = mode; const hasKey = this.sessionManager.getPeerPreSessionKey(peer);
     const fp = this.sessionManager.fingerprints.get(peer); const changed = this.sessionManager.keyChanged.has(peer);
     this.dom.modal.hidden = false; document.body.classList.add('modal-open'); this.dom.handshakeLabel.textContent = `HANDSHAKE / ${peer.toUpperCase()}`; this.dom.keySetup.hidden = true; this.dom.fingerprintPanel.hidden = true; this.dom.handshakeStatus.replaceChildren();
