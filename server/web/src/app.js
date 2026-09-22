@@ -35,6 +35,8 @@ class YoriApp {
     this.circuitManager = null;
     this.coverManager = null;
     this.sessionManager = null;
+    this.qrStream = null;
+    this.qrScanTimer = null;
     this.initDOM();
   }
 
@@ -48,7 +50,8 @@ class YoriApp {
       emptyChat: $('empty-chat'), chatView: $('chat-view'), chatAvatar: $('chat-avatar'), chatHeaderName: $('chat-header-name'), chatSessionState: $('chat-session-state'), routeLabel: $('route-label'),
       messagesPane: $('messages-pane'), messageForm: $('message-form'), messageInput: $('message-input'), securityButton: $('security-button'), clearChat: $('clear-chat-button'), endSession: $('end-session-button'),
       securityDrawer: $('security-drawer'), drawerToggle: $('drawer-toggle'), drawerContent: $('drawer-content'),
-      modal: $('handshake-modal'), handshakeLabel: $('handshake-label'), handshakeTitle: $('handshake-title'), handshakeDescription: $('handshake-description'), handshakeStatus: $('handshake-status'), keySetup: $('key-setup'), keyOptions: $('key-options'), ownKeyPanel: $('own-key-panel'), ownKeyOutput: $('own-key-output'), peerKeyPanel: $('peer-key-panel'), peerKeyInput: $('peer-key-input'), generateKey: $('generate-key-button'), inputKey: $('input-key-button'), copyKey: $('copy-key-button'), fingerprintPanel: $('fingerprint-panel'), peerFingerprint: $('peer-fingerprint'), handshakeAction: $('handshake-action'), handshakeCancel: $('handshake-cancel')
+      modal: $('handshake-modal'), handshakeLabel: $('handshake-label'), handshakeTitle: $('handshake-title'), handshakeDescription: $('handshake-description'), handshakeStatus: $('handshake-status'), keySetup: $('key-setup'), keyOptions: $('key-options'), ownKeyPanel: $('own-key-panel'), ownKeyOutput: $('own-key-output'), ownKeyQR: $('own-key-qr'), peerKeyPanel: $('peer-key-panel'), peerKeyInput: $('peer-key-input'), scanKey: $('scan-key-button'), cameraPanel: $('camera-panel'), cameraVideo: $('camera-video'), stopScan: $('stop-scan-button'), scanStatus: $('scan-status'), generateKey: $('generate-key-button'), inputKey: $('input-key-button'), copyKey: $('copy-key-button'), fingerprintPanel: $('fingerprint-panel'), peerFingerprint: $('peer-fingerprint'), handshakeAction: $('handshake-action'), handshakeCancel: $('handshake-cancel')
+      , landingThreads: $('landing-threads'), chatTopography: $('chat-topography')
     };
     this.dom.drawerBackdrop = document.createElement('div');
     this.dom.drawerBackdrop.className = 'drawer-backdrop';
@@ -76,6 +79,97 @@ class YoriApp {
     this.dom.generateKey.addEventListener('click', () => this.showKeyMode('generate'));
     this.dom.inputKey.addEventListener('click', () => this.showKeyMode('input'));
     this.dom.copyKey.addEventListener('click', () => this.copySessionKey());
+    this.dom.scanKey.addEventListener('click', () => this.startQRScanner());
+    this.dom.stopScan.addEventListener('click', () => this.stopQRScanner());
+    this.initDecryptedBrands();
+    this.initLandingThreads();
+    this.initChatTopography();
+  }
+
+  initDecryptedBrands() {
+    const elements = [...document.querySelectorAll('[data-decrypted-brand]')];
+    if (!elements.length) return;
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#$%';
+    const randomText = length => Array.from({ length }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join('');
+    let stopped = false;
+    const timers = new Set();
+    const later = (callback, delay) => { const timer = window.setTimeout(() => { timers.delete(timer); callback(); }, delay); timers.add(timer); return timer; };
+    const every = (callback, delay) => { const timer = window.setInterval(callback, delay); timers.add(timer); return timer; };
+    const cycle = () => {
+      if (stopped) return;
+      const length = 12; let settled = 0; let ticks = 0;
+      elements.forEach(element => { element.textContent = randomText(length); element.classList.add('is-decrypting'); });
+      const animation = every(() => {
+        if (stopped) return;
+        ticks += 1;
+        if (ticks % 6 === 0 && settled < 4) settled += 1;
+        if (settled >= 4) {
+          window.clearInterval(animation); timers.delete(animation);
+          elements.forEach(element => { element.textContent = 'YORI'; element.classList.remove('is-decrypting'); });
+          this.decryptedBrandTimer = later(cycle, 6000);
+          return;
+        }
+        const resolved = 'YORI'.slice(0, settled);
+        const display = resolved + randomText(length - settled);
+        elements.forEach(element => { element.textContent = display; });
+      }, 90);
+    };
+    cycle();
+    this.decryptedBrandsCleanup = () => { stopped = true; timers.forEach(timer => window.clearTimeout(timer)); timers.clear(); };
+  }
+
+  initLandingThreads() {
+    const canvas = this.dom.landingThreads;
+    if (!canvas) return;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    const pointer = { x: 0.5, y: 0.5, active: false };
+    const threads = Array.from({ length: 6 }, (_, index) => ({ index, phase: Math.random() * Math.PI * 2, bend: (Math.random() - 0.5) * 0.22 }));
+    let width = 0; let height = 0; let frame = 0; let animation;
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect(); const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      width = Math.max(1, rect.width); height = Math.max(1, rect.height); canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio); context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    };
+    const draw = () => {
+      frame += 0.004; context.clearRect(0, 0, width, height);
+      const originX = -width * 0.04;
+      threads.forEach((thread, index) => {
+        const lane = index / (threads.length - 1); const originY = height * (0.18 + lane * 0.64); const endX = width * 1.04;
+        const wave = Math.sin(frame * 1.8 + thread.phase) * height * 0.035; const bend = thread.bend * height + (pointer.y - 0.5) * height * 0.08;
+        const endY = originY + wave; const gradient = context.createLinearGradient(originX, originY, endX, endY);
+        gradient.addColorStop(0, 'rgba(255,159,252,0.06)'); gradient.addColorStop(.35, index % 2 ? 'rgba(105,67,255,0.58)' : 'rgba(255,159,252,0.46)'); gradient.addColorStop(1, 'rgba(181,156,255,0.08)');
+        context.beginPath(); context.moveTo(originX, originY); context.bezierCurveTo(width * .28, originY + bend, width * .68, endY - bend, endX, endY); context.strokeStyle = gradient; context.lineWidth = 1.35; context.globalAlpha = .82; context.stroke();
+      });
+      context.globalAlpha = 1;
+      if (frame < 100000) animation = requestAnimationFrame(draw);
+    };
+    const move = event => { const rect = canvas.getBoundingClientRect(); pointer.x = (event.clientX - rect.left) / rect.width; pointer.y = (event.clientY - rect.top) / rect.height; pointer.active = true; };
+    canvas.addEventListener('pointermove', move, { passive: true }); window.addEventListener('resize', resize); resize(); draw();
+    this.landingThreadsCleanup = () => { cancelAnimationFrame(animation); window.removeEventListener('resize', resize); canvas.removeEventListener('pointermove', move); };
+  }
+
+  initChatTopography() {
+    const canvas = this.dom.chatTopography;
+    if (!canvas) return;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    let width = 0; let height = 0; let time = 0; let animation;
+    const resize = () => { const rect = canvas.getBoundingClientRect(); const ratio = Math.min(window.devicePixelRatio || 1, 2); width = Math.max(1, rect.width); height = Math.max(1, rect.height); canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio); context.setTransform(ratio, 0, 0, ratio, 0, 0); };
+    const draw = () => {
+      time += 0.0025; context.clearRect(0, 0, width, height); context.lineWidth = 0.8;
+      for (let band = 0; band < 18; band += 1) {
+        const base = height * (0.08 + band * 0.052); context.beginPath();
+        for (let x = -10; x <= width + 10; x += 8) {
+          const wave = Math.sin(x * 0.006 + time + band * 0.38) * height * 0.028 + Math.sin(x * 0.013 - time * 0.7 + band) * height * 0.012;
+          const y = base + wave;
+          if (x < 0) context.moveTo(x, y); else context.lineTo(x, y);
+        }
+        const alpha = 0.035 + (band % 4 === 0 ? 0.018 : 0); context.strokeStyle = band % 3 === 0 ? `rgba(181,156,255,${alpha})` : `rgba(105,221,215,${alpha * .72})`; context.stroke();
+      }
+      animation = requestAnimationFrame(draw);
+    };
+    const observer = new ResizeObserver(resize); observer.observe(canvas.parentElement); resize(); draw();
+    this.chatTopographyCleanup = () => { cancelAnimationFrame(animation); observer.disconnect(); };
   }
 
   log(message, type = 'info') {
@@ -124,7 +218,7 @@ class YoriApp {
   }
 
   handleConnStatus(status, text) {
-    const label = status === 'connected' ? 'MESH CONNECTED' : status === 'reconnecting' ? (text.includes('Connecting') ? 'CONNECTING' : 'RECONNECTING') : 'DISCONNECTED';
+    const label = status === 'connected' ? 'CONNECTED' : status === 'reconnecting' ? (text.includes('Connecting') ? 'CONNECTING' : 'RECONNECTING') : 'DISCONNECTED';
     this.setConnectionStatus(status, label);
     if (status === 'connected') {
       this.ws.send({ type: 'register', username: this.username, relay_public_key: this.relayKey.pubB64 });
@@ -212,7 +306,7 @@ class YoriApp {
       const card = document.createElement('button'); card.type = 'button'; card.className = `peer-card ${this.selectedPeer === peer.username ? 'selected' : ''}`;
       const avatar = document.createElement('span'); avatar.className = 'avatar'; avatar.textContent = initials(peer.username);
       const info = document.createElement('span'); info.className = 'peer-card-info'; const name = document.createElement('strong'); name.textContent = peer.username; const state = document.createElement('small');
-      state.textContent = changed ? 'IDENTITY CHANGE DETECTED' : established ? 'ONLINE · SESSION ACTIVE' : fp?.verified ? 'ONLINE · VERIFIED' : 'ONLINE · READY'; state.className = established || fp?.verified ? 'ready' : changed ? '' : '';
+      state.textContent = changed ? 'IDENTITY CHANGE DETECTED' : established ? 'ONLINE · SESSION ACTIVE' : 'ONLINE · READY'; state.className = established || fp?.verified ? 'ready' : changed ? '' : '';
       info.append(name, state); const arrow = document.createElement('span'); arrow.className = 'peer-chevron'; arrow.textContent = '›'; card.append(avatar, info, arrow);
       card.addEventListener('click', () => established ? this.selectPeer(peer.username) : this.openHandshake(peer.username, changed ? 'key-change' : 'setup'));
       this.dom.peerList.append(card);
@@ -277,16 +371,65 @@ class YoriApp {
 
   showKeyMode(mode) {
     this.keyMode = mode;
+    this.stopQRScanner();
     this.dom.ownKeyPanel.hidden = mode !== 'generate';
     this.dom.peerKeyPanel.hidden = mode !== 'input';
     if (mode === 'generate') {
       this.dom.ownKeyOutput.value = this.preSession.pubB64;
+      this.renderSessionQRCode(this.preSession.pubB64);
       this.dom.handshakeAction.textContent = 'WAIT FOR USER';
     } else {
       this.dom.handshakeAction.textContent = `CONNECT TO ${this.handshakePeer.toUpperCase()} →`;
       this.dom.peerKeyInput.focus();
     }
     this.dom.handshakeAction.hidden = false;
+  }
+
+  async renderSessionQRCode(value) {
+    if (!this.dom.ownKeyQR) return;
+    const context = this.dom.ownKeyQR.getContext('2d');
+    if (!context) return;
+    try {
+      const module = await import('https://cdn.jsdelivr.net/npm/qrcode@1.5.4/+esm');
+      const QRCode = module.default || module;
+      await QRCode.toCanvas(this.dom.ownKeyQR, value, { width: 190, margin: 2, color: { dark: '#171126', light: '#f4f0ff' } });
+    } catch (error) {
+      context.clearRect(0, 0, this.dom.ownKeyQR.width, this.dom.ownKeyQR.height);
+      this.log(`[warn] QR generation unavailable; copy the public key manually (${error.message})`, 'warn');
+    }
+  }
+
+  async startQRScanner() {
+    this.dom.cameraPanel.hidden = false;
+    if (!window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') { this.dom.scanStatus.textContent = 'Camera access requires HTTPS. Paste the public key manually.'; return; }
+    if (!navigator.mediaDevices?.getUserMedia) { this.dom.scanStatus.textContent = 'This browser does not provide camera access. Paste the public key manually.'; return; }
+    try {
+      try { this.qrStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false }); }
+      catch (_) { this.qrStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false }); }
+      this.dom.cameraVideo.srcObject = this.qrStream; this.dom.cameraPanel.hidden = false; await this.dom.cameraVideo.play();
+      this.dom.scanStatus.textContent = 'Camera active. Point it at the peer\'s QR code.';
+      if (!('BarcodeDetector' in window)) { this.dom.scanStatus.textContent = 'Camera is active, but QR scanning is not supported by this browser. Paste the key manually.'; return; }
+      this.dom.scanStatus.textContent = 'Point the camera at the peer\'s QR code.';
+      const detector = new BarcodeDetector({ formats: ['qr_code'] });
+      const scan = async () => {
+        if (!this.qrStream) return;
+        try {
+          const codes = await detector.detect(this.dom.cameraVideo);
+          if (codes.length && codes[0].rawValue) { this.dom.peerKeyInput.value = codes[0].rawValue.trim(); this.dom.scanStatus.textContent = 'Public key scanned successfully.'; this.stopQRScanner(false); return; }
+        } catch (_) {}
+        this.qrScanTimer = window.setTimeout(scan, 180);
+      };
+      scan();
+    } catch (error) {
+      this.dom.cameraPanel.hidden = false; this.dom.scanStatus.textContent = `Camera unavailable: ${error.message}`;
+    }
+  }
+
+  stopQRScanner(hide = true) {
+    if (this.qrScanTimer) { window.clearTimeout(this.qrScanTimer); this.qrScanTimer = null; }
+    if (this.qrStream) { this.qrStream.getTracks().forEach(track => track.stop()); this.qrStream = null; }
+    if (this.dom?.cameraVideo) this.dom.cameraVideo.srcObject = null;
+    if (hide && this.dom?.cameraPanel) this.dom.cameraPanel.hidden = true;
   }
 
   async copySessionKey() {
@@ -329,7 +472,7 @@ class YoriApp {
     this.renderMessages();
     this.log(`[chat] cleared local chat history with ${this.selectedPeer}`);
   }
-  closeModal() { this.dom.modal.hidden = true; document.body.classList.remove('modal-open'); this.handshakePeer = null; this.dom.peerKeyInput.value = ''; }
+  closeModal() { this.stopQRScanner(); this.dom.modal.hidden = true; document.body.classList.remove('modal-open'); this.handshakePeer = null; this.dom.peerKeyInput.value = ''; }
   endSession() { if (!this.selectedPeer) return; this.sessionManager.sessions.delete(this.selectedPeer); this.log(`[session] closed local session with ${this.selectedPeer}`); this.selectedPeer = null; this.dom.chatView.hidden = true; this.dom.emptyChat.hidden = false; this.renderPeerList(); }
   shareSessionKey() { if (!this.preSession) return; window.prompt('Share this public setup key with a trusted contact outside Yori. Never share private keys or session secrets.', this.preSession.pubB64); }
 
@@ -361,5 +504,5 @@ class YoriApp {
 
 window.addEventListener('DOMContentLoaded', () => {
   const app = new YoriApp();
-  window.addEventListener('beforeunload', () => { app.coverManager?.stop(); app.circuitManager?.stopAll(); app.ws?.disconnect(); });
+  window.addEventListener('beforeunload', () => { app.coverManager?.stop(); app.circuitManager?.stopAll(); app.ws?.disconnect(); app.stopQRScanner(); app.decryptedBrandsCleanup?.(); app.landingThreadsCleanup?.(); app.chatTopographyCleanup?.(); });
 });
