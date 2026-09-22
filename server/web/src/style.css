@@ -221,6 +221,8 @@ button,input,textarea { font:inherit; } button { cursor:pointer; } [hidden] { di
 .camera-panel p { margin:8px 0 0; color:#aebdca; font-size:12px; line-height:1.4; }
 .modal-box { overflow-y:auto; -webkit-overflow-scrolling:touch; touch-action:pan-y; }
 .modal-overlay { z-index:40; }
+.empty-chat .empty-icon,
+.empty-chat > .eyebrow { display:none; }
 
 /* Keep textual connection states, remove circular status markers. */
 .online-dot,
@@ -252,6 +254,22 @@ button,input,textarea { font:inherit; } button { cursor:pointer; } [hidden] { di
 .sidebar-brand-icon { border-color:rgba(181,156,255,.38); color:var(--cyan); background:rgba(137,108,255,.12); }
 .handshake-box { border-color:rgba(181,156,255,.25); }
 .key-option b { color:var(--cyan); background:rgba(137,108,255,.14); }
+
+/* Green accent variant */
+:root { --cyan:#63e6a8; --cyan-strong:#2fbd83; --line-bright:rgba(99,230,168,.4); --violet:#8cefc0; }
+.peer-sidebar .sidebar-top .eyebrow { display:none; }
+.ambient-grid { background:radial-gradient(ellipse 70% 50% at 70% 8%,rgba(40,170,112,.15),transparent 65%),linear-gradient(rgba(105,210,157,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(105,210,157,.035) 1px,transparent 1px); }
+.landing-screen { background:radial-gradient(circle at 18% 36%,rgba(40,190,125,.13),transparent 30%),radial-gradient(circle at 85% 74%,rgba(105,221,215,.06),transparent 32%); }
+.brand-mark,.modal-icon,.empty-icon,.sidebar-brand-icon { border-color:rgba(99,230,168,.42); background:rgba(40,190,125,.12); box-shadow:0 0 25px rgba(40,190,125,.18); }
+.peer-card.selected { background:linear-gradient(100deg,rgba(47,189,131,.18),rgba(54,201,195,.05)); border-color:rgba(99,230,168,.32); }
+.session-banner { border-color:rgba(99,230,168,.22); background:rgba(47,189,131,.08); }
+.message-row.self .message-bubble { background:linear-gradient(135deg,rgba(47,189,131,.3),rgba(35,145,118,.16)); border-color:rgba(99,230,168,.36); }
+.send-button { box-shadow:0 5px 18px rgba(47,189,131,.3); }
+.handshake-box { border-color:rgba(99,230,168,.28); }
+.handshake-box > .modal-icon { display:none; }
+#handshake-label { display:none; }
+#generate-key-button > b { font-size:0; }
+#generate-key-button > b::before { content:'⚿'; color:var(--cyan); font:700 21px/1 var(--sans); }
 
 .empty-peers p { color:#d3e4e8; font:600 12px/1.4 var(--sans); letter-spacing:.06em; }
 

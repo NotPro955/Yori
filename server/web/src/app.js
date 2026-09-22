@@ -97,20 +97,21 @@ class YoriApp {
     const every = (callback, delay) => { const timer = window.setInterval(callback, delay); timers.add(timer); return timer; };
     const cycle = () => {
       if (stopped) return;
-      const length = 12; let settled = 0; let ticks = 0;
-      elements.forEach(element => { element.textContent = randomText(length); element.classList.add('is-decrypting'); });
+      const startLength = 12; let currentLength = startLength; let settled = 0; let ticks = 0;
+      elements.forEach(element => { element.textContent = randomText(startLength); element.classList.add('is-decrypting'); });
       const animation = every(() => {
         if (stopped) return;
         ticks += 1;
+        if (ticks % 4 === 0 && currentLength > 4) currentLength -= 1;
         if (ticks % 6 === 0 && settled < 4) settled += 1;
-        if (settled >= 4) {
+        if (currentLength <= 4 && settled >= 4) {
           window.clearInterval(animation); timers.delete(animation);
           elements.forEach(element => { element.textContent = 'YORI'; element.classList.remove('is-decrypting'); });
           this.decryptedBrandTimer = later(cycle, 6000);
           return;
         }
         const resolved = 'YORI'.slice(0, settled);
-        const display = resolved + randomText(length - settled);
+        const display = resolved + randomText(Math.max(0, currentLength - settled));
         elements.forEach(element => { element.textContent = display; });
       }, 90);
     };
